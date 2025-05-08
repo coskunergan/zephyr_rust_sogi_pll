@@ -1,0 +1,14 @@
+
+&adc1 {
+	pinctrl-0 = <&adc1_in10_pc0 &adc1_in11_pc1>;	
+	pinctrl-names = "default";
+	st,adc-prescaler = <2>;
+	status = "okay";
+};
+
+&dac1 {
+ 	pinctrl-0 = <&dac_out2_pa5>;
+ 	pinctrl-names = "default";	
+ 	status = "okay";
+};
+

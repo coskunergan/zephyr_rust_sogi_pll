@@ -1,0 +1,18 @@
+{
+   "workspaceFolder": {
+   "path": ".",
+   "zephyrproject": "%HOMEPATH%/zephyrproject",
+   "AppUnderDev": "${workspaceRoot}"
+   },
+"bsp": {
+   "board": "stm32f4_disco",
+   //"board": "rpi_pico",
+   //"board": "stm32l1_disco",
+   //"board": "lpcxpresso11u68",
+   //"board": "qemu_cortex_m3",
+ },
+ "app": {
+   "name": "${config:workspaceFolder.AppUnderDev}",
+   "build_dir": "${workspaceFolder}\\build",
+   }
+}

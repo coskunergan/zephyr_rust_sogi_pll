@@ -1,0 +1,104 @@
+#include "stm32f4_disco.dtsi"
+
+&i2c2 {
+	pinctrl-0 = <&i2c2_scl_pb10 &i2c2_sda_pb11>;
+	pinctrl-names = "default";
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_STANDARD>;
+	aux_display_gpio: pcf8574@27 {
+		compatible = "nxp,pcf857x";
+		reg = <0x27>;
+		gpio-controller;
+		ngpios = <8>;
+		#gpio-cells = <2>;
+	};
+};
+
+&dac1 {
+	pinctrl-0 = <&dac_out2_pa5>;
+	pinctrl-names = "default";	
+	status = "okay";
+};
+
+/ {
+	gpios {
+		compatible = "gpio-leds";
+		led_green: led_green {
+			gpios = <&gpiod 12 GPIO_ACTIVE_HIGH>;
+			label = "green led";
+		};
+		led_red: led_red {
+			gpios = <&gpiod 13 GPIO_ACTIVE_HIGH>;
+			label = "red led";
+		};		
+		led_blue: led_blue {
+			gpios = <&gpiod 15 GPIO_ACTIVE_HIGH>;
+			label = "blue led";
+		};				
+		led_orange: led_orange {
+			gpios = <&gpiod 14 GPIO_ACTIVE_HIGH>;
+			label = "orange led";
+		};		
+		button: button {
+			gpios = <&gpioa 0 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
+			label = "Button";
+		};
+		encoder_a: encoder_a {
+			gpios = <&gpioe 2 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "Encoder A";
+		};
+		encoder_b: encoder_b {
+			gpios = <&gpioe 3 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "Encoder B";
+		};	
+		test_pin: test_pin {
+			gpios = <&gpioe 4 (GPIO_ACTIVE_HIGH)>;
+			label = "test pin";
+		};								
+	};	
+	zephyr,user {
+		/* adjust channel number according to pinmux in board.dts */
+		io-channels = <&adc1 10>, <&adc1 11>;
+		io-channel-names = "ADC_V", "ADC_A";
+
+		dac = <&dac1>;
+		dac-channel-id = <2>;
+		dac-resolution = <12>;			
+	};		
+	auxdisplay_0: hd44780 {
+		compatible = "hit,hd44780";
+		columns = <16>;
+		rows = <2>;
+		mode = <4>;
+		boot-delay-ms = <100>;
+		register-select-gpios = <&aux_display_gpio 0 (GPIO_ACTIVE_HIGH)>;
+		read-write-gpios    = <&aux_display_gpio 1 (GPIO_ACTIVE_HIGH)>;
+		enable-gpios        = <&aux_display_gpio 2 (GPIO_ACTIVE_HIGH)>;
+		backlight-gpios     = <&aux_display_gpio 3 (GPIO_ACTIVE_HIGH)>;
+		data-bus-gpios      = <0>, <0>, <0>, <0>,
+				<&aux_display_gpio 4 (GPIO_ACTIVE_HIGH)>,
+				<&aux_display_gpio 5 (GPIO_ACTIVE_HIGH)>,
+				<&aux_display_gpio 6 (GPIO_ACTIVE_HIGH)>,
+				<&aux_display_gpio 7 (GPIO_ACTIVE_HIGH)>;
+	};	
+};
+
+&adc1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+ 
+	channel@10 {
+		reg = <10>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,resolution = <12>;
+	};
+	channel@11 {
+		reg = <11>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,resolution = <12>;
+	};	
+};

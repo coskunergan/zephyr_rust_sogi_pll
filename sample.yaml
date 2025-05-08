@@ -1,0 +1,24 @@
+# See doc/develop/test/twister.rst for what is here.
+sample:
+  name: Driver Sample
+common:
+  filter: CONFIG_RUST_SUPPORTED
+  platform_allow:
+    - qemu_cortex_m0
+    - qemu_cortex_m3
+    - qemu_riscv32
+    - qemu_riscv64
+    - nrf52840dk/nrf52840
+    - stm32f4_disco
+    - rpi_pico
+tests:
+  sample.basic.drivers:
+    tags:
+      - I2C
+      - ADC      
+    filter: 
+    depends_on: ADC
+    harness: ADC
+    integration_platforms:
+      - stm32f4_disco
+      - rpi_pico

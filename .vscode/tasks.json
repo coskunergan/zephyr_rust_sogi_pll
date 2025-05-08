@@ -1,0 +1,93 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build",
+			"type": "shell",
+			"group": "build",
+			"command": "west",
+			"args": [
+				//"-v",
+				"build",				
+				"-p",
+				"auto",
+				"-d",
+				"${config:app.build_dir}",
+				"-b",
+				"${config:bsp.board}",
+				"${config:app.name}"				
+			],
+			"problemMatcher": [
+				"$gcc"
+			]
+		},
+		{
+			"label": "Full Build",
+			"type": "shell",
+			"group": "build",
+			"command": "west",
+			"args": [
+				"build",				
+				"-p",
+				"always",
+				"-d",
+				"${config:app.build_dir}",
+				"-b",
+				"${config:bsp.board}",
+				"${config:app.name}"
+			],
+			"problemMatcher": [
+				"$gcc"
+			]
+		},
+		{
+			"label": "Clean Build",
+			"type": "shell",
+			"group": "build",
+			"command": "Remove-Item",
+			"args": [
+				"-Path",
+				"${config:app.build_dir}",
+				"-Force",
+				"-Recurse"
+			],
+			"dependsOn": [],
+			"problemMatcher": []
+		},
+		{
+			"label": "Debug Build",
+			"type": "shell",
+			"group": "build",
+			"command": "west",
+			"args": [
+				"build",
+				"-",
+				"-p",
+				"always",
+				"-d",
+				"${config:app.build_dir}",
+				"-b",
+				"${config:bsp.board}",
+				"${config:app.name}",
+				"--",
+				"-DCONF_FILE='prj.conf;debug.conf;./boards/${config:bsp.board}.conf'"
+			],
+			"problemMatcher": [
+				"$gcc"
+			]
+		},
+		{
+			"label": "Flash",
+			"type": "shell",
+			"group": "build",
+			"command": "west",
+			"args": [
+				"flash",
+				"--build-dir",
+				"${config:app.build_dir}"
+			],
+			"dependsOn": [],
+			"problemMatcher": []
+		}
+	]
+}
