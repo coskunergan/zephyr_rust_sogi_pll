@@ -4,7 +4,7 @@
 
 extern "C" {
     fn dac_init() -> i32;
-    fn dac_write(value: i32) -> i32;
+    fn dac_write(value: u32) -> i32;
 }
 
 pub struct Dac {
@@ -21,7 +21,7 @@ impl Dac {
         Dac { _private: () }
     }
 
-    pub fn write(&self, value: i32) {
+    pub fn write(&self, value: u32) {
         let ret = unsafe { dac_write(value) };
         if ret != 0 {
             panic!("Failed to write to DAC: error {}", ret);

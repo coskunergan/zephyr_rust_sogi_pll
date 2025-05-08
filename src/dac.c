@@ -34,7 +34,7 @@ int dac_init(void)
     return dac_channel_setup(dac_dev, &dac_ch_cfg);
 }
 
-int dac_write(int32_t value)
+int dac_write(uint32_t value)
 {
     return dac_write_value(dac_dev, DAC_CHANNEL_ID, value);
 }
