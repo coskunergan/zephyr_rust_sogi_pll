@@ -23,6 +23,7 @@ use embassy_sync::signal::Signal;
 use spin::Once;
 use static_cell::StaticCell;
 use zephyr::sync::{Arc, Mutex};
+use zephyr::raw::k_cycle_get_32;
 
 use adc_io::Adc;
 use dac_io::Dac;
@@ -31,6 +32,9 @@ use display_io::Display;
 mod adc_io;
 mod dac_io;
 mod display_io;
+
+// Performans ölçümü için statik değişken
+static mut LAST_CYCLES: u32 = 0;
 
 // SOGI-PLL durum yapısı
 struct SogiPllState {
@@ -125,6 +129,9 @@ fn adc_callback(idx: usize, value: i16) {
     const KI: i16 = 327; // 0.01 * 32768
     const NOMINAL_OMEGA: i16 = 31416; // 2π * 50 Hz, Q15
 
+    // Performans ölçümü: Başlangıç
+    let start = unsafe { k_cycle_get_32() };
+
     if idx == 0 {
         // SOGI-PLL durumuna güvenli erişim
         if let Ok(mut state) = SOGI_STATE_REF.get().unwrap().lock() {
@@ -150,6 +157,10 @@ fn adc_callback(idx: usize, value: i16) {
             }
         }
     }
+
+    // Performans ölçümü: Bitiş ve saklama
+    let end = unsafe { k_cycle_get_32() };
+    unsafe { LAST_CYCLES = end.wrapping_sub(start); }
 }
 
 // Ekran güncelleme görevi
@@ -166,7 +177,11 @@ async fn display_task() {
         if let Ok(state) = SOGI_STATE_REF.get().unwrap().lock() {
             if let Some(display) = DISPLAY.get() {
                 display.clear();
-                let msg = format!("Alpha: {:<5}    Theta: {}", state.v_alpha, state.theta);
+                let msg = format!(
+                    "Theta: {:<5}    Cycles: {}",
+                    state.theta,
+                    unsafe { LAST_CYCLES }
+                );
                 display.write(msg.as_bytes());
             }
         }
