@@ -65,4 +65,5 @@ zephyr-build = "0.1.0"
 opt-level = 1
 
 [profile.release]
-debug = true
+debug = false
+debug-assertions = false
