@@ -19,6 +19,7 @@ log = "0.4.22"
 static_cell = "2.1"
 heapless = "0.8"
 spin = { version = "0.10"}
+libm = "0.2"
 
 [dependencies.embassy-executor]
 version = "0.7.0"

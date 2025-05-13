@@ -16,7 +16,7 @@ use embassy_executor::Executor;
 #[cfg(feature = "executor-zephyr")]
 use zephyr::embassy::Executor;
 
-use core::{sync::atomic::AtomicBool, sync::atomic::AtomicI32, sync::atomic::Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
@@ -33,129 +33,226 @@ mod dac_io;
 mod display_io;
 mod usage;
 
-// SOGI-PLL durum yapısı
+// Sabitler
+const PI: f32 = 3.14159265358979323;
+const TAU: f32 = PI * 2.0;
+const MAX: f32 = 4096.0;
+const MIN: f32 = 0.0;
+const T: f32 = 1.0 / 1000.0; // 1 kHz
+const TARGET_FREQ: f32 = 50.0;
+const N_SAMPLE: usize = (1.0 / T / TARGET_FREQ) as usize; // 1000 / 50 = 20
+
+// SOGI-PLL durum yapısı (C++ SPLL’den uyarlandı)
 struct SogiPllState {
-    v_alpha: i16,  // Q15
-    v_beta: i16,   // Q15
-    omega: i16,    // Q15 (2π * 50 Hz)
-    theta: u16,    // 0-65535 (2π)
-    integral: i32, // Q15
+    pid: PidState,
+    launch_loop: bool,
+    sample_index: u16,
+    omega: f32,
+    cur_phase: f32,
+    auto_offset_min: f32,
+    auto_offset_max: f32,
+    sogi_s1: f32,
+    sogi_s2: f32,
+    last_error: f32,
+}
+
+struct PidState {
+    i_sum: f32,
+    sat_err: f32,
+    kp: f32,
+    ki: f32,
+    kc: f32,
+    i_min: f32,
+    i_max: f32,
 }
 
 impl SogiPllState {
     const fn new() -> Self {
         SogiPllState {
-            v_alpha: 0,
-            v_beta: 0,
-            omega: 31416, // 2π * 50 Hz, Q15
-            theta: 0,
-            integral: 0,
+            pid: PidState {
+                i_sum: 0.0,
+                sat_err: 0.0,
+                kp: 750.0,
+                ki: 15.0,
+                kc: 10.0,
+                i_min: -(TARGET_FREQ + 15.0) * TAU,
+                i_max: (TARGET_FREQ + 15.0) * TAU,
+            },
+            launch_loop: false,
+            sample_index: 0,
+            omega: TARGET_FREQ * TAU, // 50 * 2π
+            cur_phase: 0.0,
+            auto_offset_min: MAX,
+            auto_offset_max: MIN,
+            sogi_s1: 0.0,
+            sogi_s2: 0.0,
+            last_error: 0.0,
         }
+    }
+
+    fn reset(&mut self) {
+        self.pid.i_sum = 0.0;
+        self.pid.sat_err = 0.0;
+        self.launch_loop = false;
+        self.sample_index = 0;
+        self.omega = TARGET_FREQ * TAU;
+        self.cur_phase = 0.0;
+        self.auto_offset_min = MAX;
+        self.auto_offset_max = MIN;
+        self.sogi_s1 = 0.0;
+        self.sogi_s2 = 0.0;
+        self.last_error = 0.0;
+    }
+
+    fn is_lock(&self, th: f32) -> bool {
+        /*self.launch_loop &&*/ self.last_error.abs() < th
     }
 }
 
-// Statik SOGI-PLL durumu (Mutex ile Sync)
+// Hızlı sinüs yaklaşıklığı (Q15, 0..2π için, Rust’tan uyarlandı)
+fn fast_sin(theta: f32) -> f32 {
+    let theta = theta % TAU; // 0..2π
+    let mut sign = 1.0;
+    let mut x = theta;
+
+    if theta >= PI / 2.0 && theta < PI {
+        x = PI - theta;
+    } else if theta >= PI && theta < PI + PI / 2.0 {
+        x = theta - PI;
+        sign = -1.0;
+    } else if theta >= PI + PI / 2.0 {
+        x = TAU - theta;
+        sign = -1.0;
+    }
+
+    let x = x * 51471.0 / 65536.0;
+    let x2 = x * x;
+    let x3 = x2 * x;
+    let sin_x = x - (x3 * 5461.0 / 32768.0);
+
+    sin_x * sign
+}
+
+// Hızlı kosinüs (sin’den türetilmiş)
+fn fast_cos(theta: f32) -> f32 {
+    fast_sin(theta + PI / 2.0)
+}
+
+// PID PI transfer (C++ PID::pi_transfer’den)
+fn pi_transfer(e: f32, pid: &mut PidState) -> f32 {
+    let sat = pid.kp * e + pid.i_sum;
+    let out = if sat > pid.i_max {
+        pid.i_max
+    } else if sat < pid.i_min {
+        pid.i_min
+    } else {
+        sat
+    };
+
+    pid.sat_err = out - sat;
+    pid.i_sum += pid.ki * e + pid.kc * pid.sat_err;
+
+    if pid.i_sum > pid.i_max {
+        pid.i_sum = pid.i_max;
+    } else if pid.i_sum < pid.i_min {
+        pid.i_sum = pid.i_min;
+    }
+
+    out
+}
+
+// SOGI-PLL transfer (C++ SPLL::transfer_1phase’ten)
+fn spll_transfer_1phase(val: f32, state: &mut SogiPllState) {
+    // Otomatik ofset
+    let v_org = {
+        state.auto_offset_max -= MAX / 1e4;
+        state.auto_offset_min += MAX / 1e4;
+        if val > state.auto_offset_max {
+            state.auto_offset_max = val;
+        } else if val < state.auto_offset_min {
+            state.auto_offset_min = val;
+        }
+        let mid = (state.auto_offset_min + state.auto_offset_max) * 0.5;
+        val - mid
+    };
+
+    // Örnekleme kontrolü
+    if state.sample_index < N_SAMPLE as u16 {
+        state.sample_index += 1;
+        state.launch_loop = false;
+        return;
+    } else {
+        state.launch_loop = true;
+    }
+
+    // Normalizasyon
+    let v = v_org / (state.auto_offset_max - state.auto_offset_min).max(1e-6);
+
+    // SOGI
+    const K: f32 = 1.414;
+    const W: f32 = TARGET_FREQ * TAU;
+    let sogi_u = (K * (v - state.sogi_s1) - state.sogi_s2) * W;
+    state.sogi_s1 += T * sogi_u;
+    state.sogi_s2 += T * W * state.sogi_s1;
+
+    // VCO (Park)
+    let ua = state.sogi_s1;
+    let ub = state.sogi_s2;
+    let theta = (360.0 / TAU) * state.cur_phase;
+    let st = fast_sin(theta * TAU / 360.0);
+    let ct = fast_cos(theta * TAU / 360.0);
+    let uq = ct * ub - st * ua;
+
+    // PI
+    let e = 0.0 - uq;
+    let u = pi_transfer(e, &mut state.pid);
+
+    // Faz güncelleme
+    let mut i = state.cur_phase + T * u;
+    if i > TAU {
+        i -= TAU;
+    } else if i < -TAU {
+        i += TAU;
+    }
+
+    state.omega = u;
+    state.cur_phase = i;
+    state.last_error = e;
+}
+
+// Statik SOGI-PLL durumu
 static SOGI_STATE: StaticCell<Mutex<SogiPllState>> = StaticCell::new();
 static SOGI_STATE_REF: Once<&'static Mutex<SogiPllState>> = Once::new();
 
-// Sinüs lookup table (256 eleman, Q15)
-const SIN_LUT: [i16; 256] = [
-    2048, 2098, 2148, 2198, 2248, 2298, 2348, 2398, 2447, 2496, 2545, 2594, 2642, 2690, 2737, 2784,
-    2831, 2877, 2923, 2968, 3013, 3057, 3100, 3143, 3185, 3226, 3267, 3307, 3346, 3385, 3423, 3459,
-    3495, 3530, 3565, 3598, 3630, 3662, 3692, 3722, 3750, 3777, 3804, 3829, 3853, 3876, 3898, 3919,
-    3939, 3958, 3975, 3992, 4007, 4021, 4034, 4045, 4056, 4065, 4073, 4080, 4085, 4089, 4093, 4094,
-    4095, 4094, 4093, 4089, 4085, 4080, 4073, 4065, 4056, 4045, 4034, 4021, 4007, 3992, 3975, 3958,
-    3939, 3919, 3898, 3876, 3853, 3829, 3804, 3777, 3750, 3722, 3692, 3662, 3630, 3598, 3565, 3530,
-    3495, 3459, 3423, 3385, 3346, 3307, 3267, 3226, 3185, 3143, 3100, 3057, 3013, 2968, 2923, 2877,
-    2831, 2784, 2737, 2690, 2642, 2594, 2545, 2496, 2447, 2398, 2348, 2298, 2248, 2198, 2148, 2098,
-    2048, 1997, 1947, 1897, 1847, 1797, 1747, 1697, 1648, 1599, 1550, 1501, 1453, 1405, 1358, 1311,
-    1264, 1218, 1172, 1127, 1082, 1038, 995, 952, 910, 869, 828, 788, 749, 710, 672, 636, 600, 565,
-    530, 497, 465, 433, 403, 373, 345, 318, 291, 266, 242, 219, 197, 176, 156, 137, 120, 103, 88,
-    74, 61, 50, 39, 30, 22, 15, 10, 6, 2, 1, 0, 1, 2, 6, 10, 15, 22, 30, 39, 50, 61, 74, 88, 103,
-    120, 137, 156, 176, 197, 219, 242, 266, 291, 318, 345, 373, 403, 433, 465, 497, 530, 565, 600,
-    636, 672, 710, 749, 788, 828, 869, 910, 952, 995, 1038, 1082, 1127, 1172, 1218, 1264, 1311,
-    1358, 1405, 1453, 1501, 1550, 1599, 1648, 1697, 1747, 1797, 1847, 1897, 1947, 1997,
-];
-
-// SOGI bloğu (Q15)
-fn sogi_process_q15(
-    input: i16,
-    omega: i16,
-    k: i16,
-    ts: i16,
-    state: &mut SogiPllState,
-) -> (i16, i16) {
-    let error = input - state.v_alpha;
-    let delta_alpha = (((omega as i32 * state.v_beta as i32) >> 15)
-        + ((k as i32 * error as i32) >> 15))
-        * ts as i32
-        >> 15;
-    state.v_alpha += TryInto::<i16>::try_into(delta_alpha).unwrap();
-    let delta_beta = ((-omega as i32 * state.v_alpha as i32) >> 15) * ts as i32 >> 15;
-    state.v_beta += TryInto::<i16>::try_into(delta_beta).unwrap();
-    (state.v_alpha, state.v_beta)
-}
-
-// Yaklaşık faz hatası hesaplama
-fn approx_phase_error(v_alpha: i16, v_beta: i16, _theta: u16) -> i16 {
-    if v_alpha == 0 {
-        0
-    } else {
-        match (((v_beta as i32) << 15) / v_alpha as i32).try_into() {
-            Ok(val) => val,
-            Err(_) => {
-                0
-            }
-        }
-    }
-}
-
-// PI denetleyici (Q15)
-fn pi_controller_q15(error: i16, kp: i16, ki: i16, ts: i16, state: &mut SogiPllState) -> i16 {
-    state.integral += ((ki as i32 * error as i32) >> 15) * ts as i32;
-    state.integral = state.integral.clamp(-1 << 30, 1 << 30); // ±2^30
-    TryInto::<i16>::try_into(((kp as i32 * error as i32) >> 15) + (state.integral >> 15)).unwrap()
-}
-
 // ADC geri çağrı fonksiyonu
 fn adc_callback(idx: usize, value: i16) {
-    // Sabitler
-    const K: i16 = 4634; // 1.414 * 32768 / 2^15
-    const TS: i16 = 328; // 100 µs (10 kHz), Q15
-    const KP: i16 = 3277; // 0.1 * 32768
-    const KI: i16 = 327; // 0.01 * 32768
-    const NOMINAL_OMEGA: i16 = 31416; // 2π * 50 Hz, Q15
-
-    // Performans ölçümü: Başlangıç
+    // Performans ölçümü
     let start = usage::get_cycle_count();
 
     if idx == 0 {
-        // SOGI-PLL durumuna güvenli erişim
         if let Ok(mut state) = SOGI_STATE_REF.get().unwrap().lock() {
-            // SOGI bloğu
-            let (v_alpha, v_beta) = sogi_process_q15(value, state.omega, K, TS, &mut state);
+            // ADC girişini ölçekle (12-bit: 0..4095 → 0..4096)
+            let scaled_value = value as f32 * MAX / 4095.0;
 
-            // Faz hatası
-            let phase_error = approx_phase_error(v_alpha, v_beta, state.theta);
-
-            // PI denetleyici
-            let omega_delta = pi_controller_q15(phase_error, KP, KI, TS, &mut state);
-            // Omega’yı güvenli şekilde güncelle
-            let new_omega = (NOMINAL_OMEGA as i32 + omega_delta as i32).clamp(-32768, 32767) as i16;
-            state.omega = new_omega;
-
-            // Faz açısını güncelle
-            state.theta = state.theta.wrapping_add(((state.omega as i32 * TS as i32) >> 15) as u16);
+            // SOGI-PLL
+            spll_transfer_1phase(scaled_value, &mut state);
 
             // DAC çıkışı
             if let Some(dac) = DAC.get() {
-                let sin_value = SIN_LUT[(state.theta >> 8) as usize] as u32;
-                dac.write(sin_value);
+                let sin_value = fast_sin(state.cur_phase);
+                let amplitude = if state.is_lock(50e-3) {
+                    // Genlik: (auto_offset_max - auto_offset_min) ölçeklenmiş
+                    (state.auto_offset_max - state.auto_offset_min).max(1.0) * 0.5
+                } else {
+                    2048.0 // Sabit genlik fallback
+                };
+                let dac_value = (sin_value * amplitude + 2048.0).clamp(0.0, 4095.0) as u32;
+                dac.write(dac_value);
             }
         }
     }
 
-    // Performans ölçümü: Bitiş ve saklama
+    // Performans ölçümü
     let end = usage::get_cycle_count();
     usage::set_last_cycles(end.wrapping_sub(start));
 }
@@ -170,14 +267,19 @@ async fn display_task() {
     let sogi_state = SOGI_STATE.init(Mutex::new(SogiPllState::new()));
     SOGI_STATE_REF.call_once(|| sogi_state);
 
+    // if let Ok(mut state) = SOGI_STATE_REF.get().unwrap().lock() {
+    //     state.reset();
+    // }
     loop {
         if let Ok(state) = SOGI_STATE_REF.get().unwrap().lock() {
             if let Some(display) = DISPLAY.get() {
                 display.clear();
+                let theta_scaled = (state.cur_phase / TAU * 65535.0) as u16;
                 let msg = format!(
-                    "Theta: {:<5}    Cycles: {}",
-                    state.theta,
-                    usage::get_last_cycles()
+                    "Theta: {:<5}    Cycles: {} L:{}",
+                    theta_scaled,
+                    usage::get_last_cycles(),
+                    0
                 );
                 display.write(msg.as_bytes());
             }
@@ -207,10 +309,14 @@ async fn main(_spawner: Spawner) {
     let dac = Dac::new();
     DAC.call_once(|| dac);
 
+    // if let Ok(mut state) = SOGI_STATE_REF.get().unwrap().lock() {
+    //     state.reset();
+    // }
+
     // ADC’yi başlat
     let mut adc = Adc::new();
     adc.read_async(
-        Duration::from_micros(100).into(), // 10 kHz (100 µs)
+        Duration::from_micros(250).into(), // 4 kHz
         Some(adc_callback),
     );
 
