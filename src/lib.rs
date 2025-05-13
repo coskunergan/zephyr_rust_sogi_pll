@@ -8,6 +8,7 @@ extern crate alloc;
 
 use alloc::format;
 use core::convert::TryInto;
+use core::ffi::c_double;
 use embassy_time::{Duration, Timer};
 
 #[cfg(feature = "executor-thread")]
@@ -38,11 +39,74 @@ const PI: f32 = 3.14159265358979323;
 const TAU: f32 = PI * 2.0;
 const MAX: f32 = 4096.0;
 const MIN: f32 = 0.0;
-const T: f32 = 1.0 / 1000.0; // 1 kHz
+const T: f32 = 1.0 / 4000.0; // 4 kHz
 const TARGET_FREQ: f32 = 50.0;
-const N_SAMPLE: usize = (1.0 / T / TARGET_FREQ) as usize; // 1000 / 50 = 20
+const N_SAMPLE: usize = (1.0 / T / TARGET_FREQ) as usize; // 4000 / 50 = 80
 
-// SOGI-PLL durum yapısı (C++ SPLL’den uyarlandı)
+// Yerel sinüs/kosinüs fonksiyonu (arm_sin_cos_f32 yerine)
+fn sin_cos_f32(theta: f32, sin_val: &mut f32, cos_val: &mut f32) {
+    // Dereceyi radyan’a çevir (0°–360° → 0–2π)
+    let theta_rad = (theta * TAU / 360.0) % TAU;
+
+    // Normalize: [0, 2π)
+    let mut x = if theta_rad >= 0.0 {
+        theta_rad % TAU
+    } else {
+        TAU - ((-theta_rad) % TAU)
+    };
+
+    let mut sign_sin = 1.0;
+    let mut sign_cos = 1.0;
+
+    // Çeyrek simetri
+    if x >= PI / 2.0 && x < PI {
+        x = PI - x;
+        sign_cos = -1.0;
+    } else if x >= PI && x < PI + PI / 2.0 {
+        x = x - PI;
+        sign_sin = -1.0;
+        sign_cos = -1.0;
+    } else if x >= PI + PI / 2.0 {
+        x = TAU - x;
+        sign_sin = -1.0;
+    }
+
+    // Taylor serisi: sin(x) ≈ x - x³/6 + x⁵/120 - x⁷/5040 + x⁹/362880
+    let x2 = x * x;
+    let x3 = x2 * x;
+    let x4 = x3 * x;
+    let x5 = x4 * x;
+    let x6 = x5 * x;
+    let x7 = x6 * x;
+    let x8 = x7 * x;
+    let x9 = x8 * x;
+
+    let sin_x = x - (x3 / 6.0) + (x5 / 120.0) - (x7 / 5040.0) + (x9 / 362880.0);
+    let cos_x = 1.0 - (x2 / 2.0) + (x4 / 24.0) - (x6 / 720.0) + (x8 / 40320.0);
+
+    *sin_val = sin_x.clamp(-1.0, 1.0) * sign_sin;
+    *cos_val = cos_x.clamp(-1.0, 1.0) * sign_cos;
+}
+
+// Hızlı sinüs
+fn fast_sin(theta: f32) -> f32 {
+    let theta_deg = (360.0 / TAU) * theta; // Radyan -> Derece
+    let mut sin_val: f32 = 0.0;
+    let mut cos_val: f32 = 0.0;
+    sin_cos_f32(theta_deg, &mut sin_val, &mut cos_val);
+    sin_val
+}
+
+// Hızlı kosinüs
+fn fast_cos(theta: f32) -> f32 {
+    let theta_deg = (360.0 / TAU) * theta; // Radyan -> Derece
+    let mut sin_val: f32 = 0.0;
+    let mut cos_val: f32 = 0.0;
+    sin_cos_f32(theta_deg, &mut sin_val, &mut cos_val);
+    cos_val
+}
+
+// SOGI-PLL durum yapısı
 struct SogiPllState {
     pid: PidState,
     launch_loop: bool,
@@ -72,15 +136,15 @@ impl SogiPllState {
             pid: PidState {
                 i_sum: 0.0,
                 sat_err: 0.0,
-                kp: 750.0,
-                ki: 15.0,
-                kc: 10.0,
+                kp: 50.0, 
+                ki: 2.0, 
+                kc: 1.0, 
                 i_min: -(TARGET_FREQ + 15.0) * TAU,
                 i_max: (TARGET_FREQ + 15.0) * TAU,
             },
             launch_loop: false,
             sample_index: 0,
-            omega: TARGET_FREQ * TAU, // 50 * 2π
+            omega: TARGET_FREQ * TAU,
             cur_phase: 0.0,
             auto_offset_min: MAX,
             auto_offset_max: MIN,
@@ -105,40 +169,11 @@ impl SogiPllState {
     }
 
     fn is_lock(&self, th: f32) -> bool {
-        /*self.launch_loop &&*/ self.last_error.abs() < th
+        self.launch_loop && self.last_error.abs() < th
     }
 }
 
-// Hızlı sinüs yaklaşıklığı (Q15, 0..2π için, Rust’tan uyarlandı)
-fn fast_sin(theta: f32) -> f32 {
-    let theta = theta % TAU; // 0..2π
-    let mut sign = 1.0;
-    let mut x = theta;
-
-    if theta >= PI / 2.0 && theta < PI {
-        x = PI - theta;
-    } else if theta >= PI && theta < PI + PI / 2.0 {
-        x = theta - PI;
-        sign = -1.0;
-    } else if theta >= PI + PI / 2.0 {
-        x = TAU - theta;
-        sign = -1.0;
-    }
-
-    let x = x * 51471.0 / 65536.0;
-    let x2 = x * x;
-    let x3 = x2 * x;
-    let sin_x = x - (x3 * 5461.0 / 32768.0);
-
-    sin_x * sign
-}
-
-// Hızlı kosinüs (sin’den türetilmiş)
-fn fast_cos(theta: f32) -> f32 {
-    fast_sin(theta + PI / 2.0)
-}
-
-// PID PI transfer (C++ PID::pi_transfer’den)
+// PID PI transfer
 fn pi_transfer(e: f32, pid: &mut PidState) -> f32 {
     let sat = pid.kp * e + pid.i_sum;
     let out = if sat > pid.i_max {
@@ -161,7 +196,7 @@ fn pi_transfer(e: f32, pid: &mut PidState) -> f32 {
     out
 }
 
-// SOGI-PLL transfer (C++ SPLL::transfer_1phase’ten)
+// SOGI-PLL transfer
 fn spll_transfer_1phase(val: f32, state: &mut SogiPllState) {
     // Otomatik ofset
     let v_org = {
@@ -169,7 +204,8 @@ fn spll_transfer_1phase(val: f32, state: &mut SogiPllState) {
         state.auto_offset_min += MAX / 1e4;
         if val > state.auto_offset_max {
             state.auto_offset_max = val;
-        } else if val < state.auto_offset_min {
+        }
+        if val < state.auto_offset_min {
             state.auto_offset_min = val;
         }
         let mid = (state.auto_offset_min + state.auto_offset_max) * 0.5;
@@ -177,8 +213,9 @@ fn spll_transfer_1phase(val: f32, state: &mut SogiPllState) {
     };
 
     // Örnekleme kontrolü
+    state.sample_index = state.sample_index.wrapping_add(1); // Sürekli artır
+
     if state.sample_index < N_SAMPLE as u16 {
-        state.sample_index += 1;
         state.launch_loop = false;
         return;
     } else {
@@ -198,9 +235,10 @@ fn spll_transfer_1phase(val: f32, state: &mut SogiPllState) {
     // VCO (Park)
     let ua = state.sogi_s1;
     let ub = state.sogi_s2;
-    let theta = (360.0 / TAU) * state.cur_phase;
-    let st = fast_sin(theta * TAU / 360.0);
-    let ct = fast_cos(theta * TAU / 360.0);
+    let theta = (360.0 / TAU) * state.cur_phase; // Radyan -> Derece
+    let mut st: f32 = 0.0;
+    let mut ct: f32 = 0.0;
+    sin_cos_f32(theta, &mut st, &mut ct);
     let uq = ct * ub - st * ua;
 
     // PI
@@ -226,33 +264,28 @@ static SOGI_STATE_REF: Once<&'static Mutex<SogiPllState>> = Once::new();
 
 // ADC geri çağrı fonksiyonu
 fn adc_callback(idx: usize, value: i16) {
-    // Performans ölçümü
     let start = usage::get_cycle_count();
 
     if idx == 0 {
         if let Ok(mut state) = SOGI_STATE_REF.get().unwrap().lock() {
-            // ADC girişini ölçekle (12-bit: 0..4095 → 0..4096)
-            let scaled_value = value as f32 * MAX / 4095.0;
-
             // SOGI-PLL
-            spll_transfer_1phase(scaled_value, &mut state);
+            spll_transfer_1phase(value as f32, &mut state);
 
-            // DAC çıkışı
+            // DAC çıkışı (SOGI-PLL ile sinüs)
             if let Some(dac) = DAC.get() {
-                let sin_value = fast_sin(state.cur_phase);
-                let amplitude = if state.is_lock(50e-3) {
-                    // Genlik: (auto_offset_max - auto_offset_min) ölçeklenmiş
+                let sin_value = fast_sin(state.cur_phase + 90.0); // OFFSET + 90
+                let amplitude = if state.is_lock(1e-5) {
                     (state.auto_offset_max - state.auto_offset_min).max(1.0) * 0.5
                 } else {
-                    2048.0 // Sabit genlik fallback
+                    2048.0
                 };
-                let dac_value = (sin_value * amplitude + 2048.0).clamp(0.0, 4095.0) as u32;
+                let result: f32 = sin_value * amplitude + 2048.0;
+                let dac_value = result.clamp(0.0, 4095.0) as u32;
                 dac.write(dac_value);
             }
         }
     }
 
-    // Performans ölçümü
     let end = usage::get_cycle_count();
     usage::set_last_cycles(end.wrapping_sub(start));
 }
@@ -263,26 +296,21 @@ async fn display_task() {
     let display = Display::new();
     DISPLAY.call_once(|| display);
 
-    // SOGI-PLL durumunu başlat
     let sogi_state = SOGI_STATE.init(Mutex::new(SogiPllState::new()));
     SOGI_STATE_REF.call_once(|| sogi_state);
-
-    // if let Ok(mut state) = SOGI_STATE_REF.get().unwrap().lock() {
-    //     state.reset();
-    // }
+    let mut theta_scaled: u16 = 0;
     loop {
         if let Ok(state) = SOGI_STATE_REF.get().unwrap().lock() {
-            if let Some(display) = DISPLAY.get() {
-                display.clear();
-                let theta_scaled = (state.cur_phase / TAU * 65535.0) as u16;
-                let msg = format!(
-                    "Theta: {:<5}    Cycles: {} L:{}",
-                    theta_scaled,
-                    usage::get_last_cycles(),
-                    0
-                );
-                display.write(msg.as_bytes());
-            }
+            theta_scaled = (state.cur_phase / TAU * 65535.0) as u16;
+        }
+        if let Some(display) = DISPLAY.get() {
+            display.clear();            
+            let msg = format!(
+                "Theta: {:<5}    Cycles: {}",
+                theta_scaled,
+                usage::get_last_cycles()
+            );
+            display.write(msg.as_bytes());
         }
         Timer::after(Duration::from_millis(100)).await;
     }
@@ -309,13 +337,8 @@ async fn main(_spawner: Spawner) {
     let dac = Dac::new();
     DAC.call_once(|| dac);
 
-    // if let Ok(mut state) = SOGI_STATE_REF.get().unwrap().lock() {
-    //     state.reset();
-    // }
-
-    // ADC’yi başlat
     let mut adc = Adc::new();
-    adc.read_async(
+    adc.read_async_isr(
         Duration::from_micros(250).into(), // 4 kHz
         Some(adc_callback),
     );
