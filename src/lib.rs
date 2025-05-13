@@ -23,7 +23,6 @@ use embassy_sync::signal::Signal;
 use spin::Once;
 use static_cell::StaticCell;
 use zephyr::sync::{Arc, Mutex};
-use zephyr::raw::k_cycle_get_32;
 
 use adc_io::Adc;
 use dac_io::Dac;
@@ -32,9 +31,7 @@ use display_io::Display;
 mod adc_io;
 mod dac_io;
 mod display_io;
-
-// Performans ölçümü için statik değişken
-static mut LAST_CYCLES: u32 = 0;
+mod usage;
 
 // SOGI-PLL durum yapısı
 struct SogiPllState {
@@ -130,7 +127,7 @@ fn adc_callback(idx: usize, value: i16) {
     const NOMINAL_OMEGA: i16 = 31416; // 2π * 50 Hz, Q15
 
     // Performans ölçümü: Başlangıç
-    let start = unsafe { k_cycle_get_32() };
+    let start = usage::get_cycle_count();
 
     if idx == 0 {
         // SOGI-PLL durumuna güvenli erişim
@@ -159,8 +156,8 @@ fn adc_callback(idx: usize, value: i16) {
     }
 
     // Performans ölçümü: Bitiş ve saklama
-    let end = unsafe { k_cycle_get_32() };
-    unsafe { LAST_CYCLES = end.wrapping_sub(start); }
+    let end = usage::get_cycle_count();
+    usage::set_last_cycles(end.wrapping_sub(start));
 }
 
 // Ekran güncelleme görevi
@@ -180,7 +177,7 @@ async fn display_task() {
                 let msg = format!(
                     "Theta: {:<5}    Cycles: {}",
                     state.theta,
-                    unsafe { LAST_CYCLES }
+                    usage::get_last_cycles()
                 );
                 display.write(msg.as_bytes());
             }
@@ -196,9 +193,7 @@ static DAC: spin::Once<Dac> = spin::Once::new();
 
 #[no_mangle]
 extern "C" fn rust_main() {
-    unsafe {
-        zephyr::set_logger().unwrap();
-    }
+    usage::set_logger_safe().expect("Logger ayarı başarısız");
 
     let executor = EXECUTOR_MAIN.init(Executor::new());
     executor.run(|spawner| {
