@@ -43,70 +43,7 @@ const T: f32 = 1.0 / 4000.0; // 4 kHz
 const TARGET_FREQ: f32 = 50.0;
 const N_SAMPLE: usize = (1.0 / T / TARGET_FREQ) as usize; // 4000 / 50 = 80
 
-// Yerel sinüs/kosinüs fonksiyonu (arm_sin_cos_f32 yerine)
-fn sin_cos_f32(theta: f32, sin_val: &mut f32, cos_val: &mut f32) {
-    // Dereceyi radyan’a çevir (0°–360° → 0–2π)
-    let theta_rad = (theta * TAU / 360.0) % TAU;
-
-    // Normalize: [0, 2π)
-    let mut x = if theta_rad >= 0.0 {
-        theta_rad % TAU
-    } else {
-        TAU - ((-theta_rad) % TAU)
-    };
-
-    let mut sign_sin = 1.0;
-    let mut sign_cos = 1.0;
-
-    // Çeyrek simetri
-    if x >= PI / 2.0 && x < PI {
-        x = PI - x;
-        sign_cos = -1.0;
-    } else if x >= PI && x < PI + PI / 2.0 {
-        x = x - PI;
-        sign_sin = -1.0;
-        sign_cos = -1.0;
-    } else if x >= PI + PI / 2.0 {
-        x = TAU - x;
-        sign_sin = -1.0;
-    }
-
-    // Taylor serisi: sin(x) ≈ x - x³/6 + x⁵/120 - x⁷/5040 + x⁹/362880
-    let x2 = x * x;
-    let x3 = x2 * x;
-    let x4 = x3 * x;
-    let x5 = x4 * x;
-    let x6 = x5 * x;
-    let x7 = x6 * x;
-    let x8 = x7 * x;
-    let x9 = x8 * x;
-
-    let sin_x = x - (x3 / 6.0) + (x5 / 120.0) - (x7 / 5040.0) + (x9 / 362880.0);
-    let cos_x = 1.0 - (x2 / 2.0) + (x4 / 24.0) - (x6 / 720.0) + (x8 / 40320.0);
-
-    *sin_val = sin_x.clamp(-1.0, 1.0) * sign_sin;
-    *cos_val = cos_x.clamp(-1.0, 1.0) * sign_cos;
-}
-
-// Hızlı sinüs
-fn fast_sin(theta: f32) -> f32 {
-    let theta_deg = (360.0 / TAU) * theta; // Radyan -> Derece
-    let mut sin_val: f32 = 0.0;
-    let mut cos_val: f32 = 0.0;
-    sin_cos_f32(theta_deg, &mut sin_val, &mut cos_val);
-    sin_val
-}
-
-// Hızlı kosinüs
-fn fast_cos(theta: f32) -> f32 {
-    let theta_deg = (360.0 / TAU) * theta; // Radyan -> Derece
-    let mut sin_val: f32 = 0.0;
-    let mut cos_val: f32 = 0.0;
-    sin_cos_f32(theta_deg, &mut sin_val, &mut cos_val);
-    cos_val
-}
-
-// SOGI-PLL durum yapısı
+// SOGI-PLL durum yapısı (C++ SPLL’den uyarlandı)
 struct SogiPllState {
     pid: PidState,
     launch_loop: bool,
@@ -173,7 +110,35 @@ impl SogiPllState {
     }
 }
 
-// PID PI transfer
+// Hızlı sinüs yaklaşıklığı (Q15, 0..2π için, Rust’tan uyarlandı)
+fn fast_sin(theta: f32) -> f32 {
+    let theta = theta % TAU; // 0..2π
+    let mut sign = 1.0;
+    let mut x = theta;
+
+    if theta >= PI / 2.0 && theta < PI {
+        x = PI - theta;
+    } else if theta >= PI && theta < PI + PI / 2.0 {
+        x = theta - PI;
+        sign = -1.0;
+    } else if theta >= PI + PI / 2.0 {
+        x = TAU - theta;
+        sign = -1.0;
+    }
+
+    let x = x * 51471.0 / 65536.0;
+    let x2 = x * x;
+    let x3 = x2 * x;
+    let sin_x = x - (x3 * 5461.0 / 32768.0);
+
+    sin_x * sign
+}
+
+// Hızlı kosinüs (sin’den türetilmiş)
+fn fast_cos(theta: f32) -> f32 {
+    fast_sin(theta + PI / 2.0)
+}
+
 fn pi_transfer(e: f32, pid: &mut PidState) -> f32 {
     let sat = pid.kp * e + pid.i_sum;
     let out = if sat > pid.i_max {
@@ -235,10 +200,9 @@ fn spll_transfer_1phase(val: f32, state: &mut SogiPllState) {
     // VCO (Park)
     let ua = state.sogi_s1;
     let ub = state.sogi_s2;
-    let theta = (360.0 / TAU) * state.cur_phase; // Radyan -> Derece
-    let mut st: f32 = 0.0;
-    let mut ct: f32 = 0.0;
-    sin_cos_f32(theta, &mut st, &mut ct);
+    let theta = (360.0 / TAU) * state.cur_phase;
+    let st = fast_sin(theta * TAU / 360.0);
+    let ct = fast_cos(theta * TAU / 360.0);
     let uq = ct * ub - st * ua;
 
     // PI
