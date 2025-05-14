@@ -34,39 +34,24 @@ mod display_io;
 mod usage;
 
 // Q15 Sabitler
+const Q15_ONE: i32 = 1 << 15; // 1.0 in Q15 = 32768
 const MAX_Q15: u32 = 4095; // DAC max
 const MIN_Q15: u32 = 0; // DAC min
 
-// SOGI-PLL durum yapısı
-struct SogiPllState {
-    v_alpha: i16,         // Q15
-    v_beta: i16,          // Q15
-    v_mid: i16,           // Q15
-    omega: i32,           // Q15 (2π * 50 Hz)
-    theta: u16,           // 0-65535 (2π)
-    integral: i32,        // Q15
-    auto_offset_min: u32, // 0..4095
-    auto_offset_max: u32, // 0..4095
-}
-
-impl SogiPllState {
-    const fn new() -> Self {
-        SogiPllState {
-            v_alpha: 0,
-            v_beta: 0,
-            v_mid: 0,
-            omega: 31416, // 2π * 50 Hz, Q15
-            theta: 0,
-            integral: 0,
-            auto_offset_min: MAX_Q15 << 4,
-            auto_offset_max: MIN_Q15 << 4,
-        }
+// Q15 çarpma: (a * b) >> 15
+#[inline]
+fn q15_mul(a: i32, b: i32) -> i32 {
+    let a_clamped = a.clamp(-Q15_ONE, Q15_ONE);
+    let b_clamped = b.clamp(-Q15_ONE, Q15_ONE);
+    let result = (a_clamped as i64 * b_clamped as i64) >> 15;
+    if result > i32::MAX as i64 {
+        i32::MAX
+    } else if result < i32::MIN as i64 {
+        i32::MIN
+    } else {
+        result as i32
     }
 }
-
-// Statik SOGI-PLL durumu (Mutex ile Sync)
-static SOGI_STATE: StaticCell<Mutex<SogiPllState>> = StaticCell::new();
-static SOGI_STATE_REF: Once<&'static Mutex<SogiPllState>> = Once::new();
 
 // Sinüs lookup table (256 eleman, Q15)
 const SIN_LUT: [i16; 256] = [
@@ -87,93 +72,163 @@ const SIN_LUT: [i16; 256] = [
     1358, 1405, 1453, 1501, 1550, 1599, 1648, 1697, 1747, 1797, 1847, 1897, 1947, 1997,
 ];
 
-// SOGI bloğu (Q15)
-fn sogi_process_q15(
-    input: i16,
-    omega: i32,
-    k: i16,
-    ts: i16,
-    state: &mut SogiPllState,
-) -> (i16, i16) {
-    let error = input - state.v_alpha;
-    let delta_alpha = (((omega as i32 * state.v_beta as i32) >> 15)
-        + ((k as i32 * error as i32) >> 15))
-        * ts as i32
-        >> 15;
-    state.v_alpha += TryInto::<i16>::try_into(delta_alpha).unwrap();
-    let delta_beta = ((-omega as i32 * state.v_alpha as i32) >> 15) * ts as i32 >> 15;
-    state.v_beta += TryInto::<i16>::try_into(delta_beta).unwrap();
-    (state.v_alpha, state.v_beta)
+// SOGI-PLL durum yapısı
+struct SogiPllState {
+    v_alpha: i16,         // Q15
+    v_beta: i16,          // Q15
+    v_mid: i16,           // Q15
+    omega: i32,           // Q15 (2π * 50 Hz)
+    theta: u16,           // 0-65535 (2π)
+    integral: i32,        // Q15
+    auto_offset_min: u32, // 0..4095
+    auto_offset_max: u32, // 0..4095
+    k: i32,               // SOGI kazancı (Q15)
+    ts: i16,              // Örnekleme süresi (Q15)
+    kp: i32,              // PLL oransal kazanç (Q15)
+    ki: i32,              // PLL integral kazanç (Q15)
+    last_input: i16,      // Son işlenen giriş (Q15)
+    last_raw_adc: i16,    // Son ham ADC değeri
+    input_buffer: [i16; 4], // Hareketli ortalama için
+    buffer_index: usize,   // Buffer indeksi
 }
 
-// Yaklaşık faz hatası hesaplama
-fn approx_phase_error(v_alpha: i16, v_beta: i16) -> i16 {
-    if v_alpha == 0 {
-        0
-    } else {
-        match (((v_beta as i32) << 15) / v_alpha as i32).try_into() {
-            Ok(val) => val,
-            Err(_) => -1,
+impl SogiPllState {
+    const fn new() -> Self {
+        // Sabitler
+        let k = (2.0 * (Q15_ONE as f32)) as i32;
+        let ts = (0.001 * (Q15_ONE as f32)) as i16; // 1000 µs (1 kHz)
+        let kp = (0.2 * (Q15_ONE as f32)) as i32;
+        let ki = (20.0 * (Q15_ONE as f32)) as i32;
+
+        SogiPllState {
+            v_alpha: 0,
+            v_beta: 0,
+            v_mid: 0,
+            omega: 31416, // 2π * 50 Hz, Q15
+            theta: 0,
+            integral: 0,
+            auto_offset_min: 2048 << 4, // 32768
+            auto_offset_max: 2048 << 4, // 32768
+            k,
+            ts,
+            kp,
+            ki,
+            last_input: 0,
+            last_raw_adc: 0,
+            input_buffer: [0; 4],
+            buffer_index: 0,
         }
+    }
+
+    // ADC verisini Q15 formatına dönüştür ve filtrele
+    fn scale_adc(&mut self, adc: i16) -> i16 {
+        // Ham ADC’yi sakla
+        self.last_raw_adc = adc;
+
+        // Otomatik ofset
+        let offset_value: u32 = ((adc as u32) << 4).try_into().unwrap();
+        if offset_value > self.auto_offset_max {
+            self.auto_offset_max = offset_value;
+        }
+        if offset_value < self.auto_offset_min {
+            self.auto_offset_min = offset_value;
+        }
+        self.auto_offset_min = self.auto_offset_min.saturating_add(1);
+        self.auto_offset_max = self.auto_offset_max.saturating_sub(1);
+        let mid = (self.auto_offset_min as i32 + self.auto_offset_max as i32) >> 5;
+        self.v_mid = mid as i16;
+
+        // Ölçeklendirme: (adc - mid) * (32768 / 2048) ≈ 32
+        let diff = (adc as i32 - mid).clamp(-1024, 1024); // Daha sıkı sınır
+        let scaled = q15_mul(diff << 5, Q15_ONE); // ×32
+        let scaled_i16 = TryInto::<i16>::try_into(scaled).unwrap_or(0);
+
+        // Hareketli ortalama filtresi
+        self.input_buffer[self.buffer_index] = scaled_i16;
+        self.buffer_index = (self.buffer_index + 1) % 4;
+        let avg = self.input_buffer.iter().map(|&x| x as i32).sum::<i32>() >> 2;
+        let filtered = TryInto::<i16>::try_into(avg).unwrap_or(0);
+        self.last_input = filtered;
+        filtered
+    }
+
+    // SOGI bloğu
+    fn sogi_process(&mut self, input: i16) -> (i16, i16) {
+        let error = input - self.v_alpha;
+        let delta_alpha = q15_mul(
+            q15_mul(error as i32, self.k as i32) - q15_mul(self.v_beta as i32, self.omega),
+            (self.ts as i32) << 6,
+        );
+        self.v_alpha += TryInto::<i16>::try_into(delta_alpha).unwrap_or(0);
+        let delta_beta = q15_mul(q15_mul(self.v_alpha as i32, self.omega), (self.ts as i32) << 6);
+        self.v_beta += TryInto::<i16>::try_into(delta_beta).unwrap_or(0);
+        (self.v_alpha, self.v_beta)
+    }
+
+    // Faz hatası hesaplama
+    fn phase_error(&self, v_beta: i16, theta: u16) -> (i16, i32) {
+        let sin_theta = SIN_LUT[(theta >> 8) as usize];
+        let raw_error = if v_beta.abs() > 100 {
+            let denominator = (v_beta.abs() >> 8) as i32;
+            if denominator != 0 {
+                q15_mul(-v_beta as i32, sin_theta as i32) / denominator
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+        let error = TryInto::<i16>::try_into(raw_error).unwrap_or(0).clamp(-1000, 1000);
+        (error, raw_error)
+    }
+
+    // PI denetleyici
+    fn pi_controller(&mut self, error: i16) -> i16 {
+        self.integral += q15_mul(q15_mul(self.ki as i32, error as i32), self.ts as i32);
+        self.integral = self.integral.clamp(-1 << 30, 1 << 30); // ±2^30
+        TryInto::<i16>::try_into(q15_mul(self.kp as i32, error as i32) + (self.integral >> 15)).unwrap_or(0)
+    }
+
+    // SOGI-PLL güncelleme
+    fn update(&mut self, adc_input: i16) -> (i16, i16, i32) {
+        // ADC ölçekleme
+        let input = self.scale_adc(adc_input);
+  
+        // SOGI bloğu
+        let (v_alpha, v_beta) = self.sogi_process(input);
+
+        // Faz hatası
+        let (phase_error, _) = self.phase_error(v_beta, self.theta);
+
+        // PI denetleyici
+        let omega_delta = self.pi_controller(phase_error);
+
+        // Omega güncelleme
+        const NOMINAL_OMEGA: i32 = 31416; // 2π * 50 Hz
+        self.omega = (NOMINAL_OMEGA + omega_delta as i32).clamp(25132, 37700); // ±20% sınır
+
+        // Faz açısı güncelleme
+        let theta_inc = (self.omega as u32 * self.ts as u32) / 100;
+        self.theta = self.theta.wrapping_add(theta_inc as u16);
+
+        (v_alpha, v_beta, self.omega)
     }
 }
 
-// PI denetleyici (Q15)
-fn pi_controller_q15(error: i16, kp: i16, ki: i16, ts: i16, state: &mut SogiPllState) -> i16 {
-    state.integral += ((ki as i32 * error as i32) >> 15) * ts as i32;
-    state.integral = state.integral.clamp(-1 << 30, 1 << 30); // ±2^30
-    TryInto::<i16>::try_into(((kp as i32 * error as i32) >> 15) + (state.integral >> 15)).unwrap()
-}
+// Statik SOGI-PLL durumu (Mutex ile Sync)
+static SOGI_STATE: StaticCell<Mutex<SogiPllState>> = StaticCell::new();
+static SOGI_STATE_REF: Once<&'static Mutex<SogiPllState>> = Once::new();
 
 // ADC geri çağrı fonksiyonu
 fn adc_callback(idx: usize, value: i16) {
-    // Sabitler
-    const K: i16 = 4634; // 1.414 * 32768 / 2^15
-    const TS: i16 = 328; // 100 µs (10 kHz), Q15
-    const KP: i16 = 819; // 0.1 * 32768
-    const KI: i16 = 82; // 0.01 * 32768
-    const NOMINAL_OMEGA: i32 = 31416; // 2π * 50 Hz, Q15
-
-    // Performans ölçümü: Başlangıç
     let start = usage::get_cycle_count();
 
+
+
     if idx == 0 {
-        // SOGI-PLL durumuna güvenli erişim
         if let Ok(mut state) = SOGI_STATE_REF.get().unwrap().lock() {
-            // Otomatik ofset
-            let v_org = {
-                state.auto_offset_max = state.auto_offset_max.saturating_sub(1);
-                state.auto_offset_min = state.auto_offset_min.saturating_add(1);
-                let offset_value: u32 = ((value as u32) << 4).try_into().unwrap(); //16
-                if offset_value > state.auto_offset_max {
-                    state.auto_offset_max = offset_value;
-                }
-                if offset_value < state.auto_offset_min {
-                    state.auto_offset_min = offset_value;
-                }
-                let mid = (state.auto_offset_min as i32 + state.auto_offset_max as i32) >> 5;
-                state.v_mid = mid as i16;
-                (value as i32 - mid).clamp(-32768, 32767) as i16
-                
-            };
-
-            // SOGI bloğu
-            let (v_alpha, v_beta) = sogi_process_q15(v_org, state.omega, K, TS, &mut state);
-
-            // Faz hatası
-            let phase_error = approx_phase_error(v_alpha, v_beta).clamp(-36, 36) as i16;
-
-            // PI denetleyici
-            let omega_delta = pi_controller_q15(phase_error, KP, KI, TS, &mut state);
-
-            // Omega’yı güvenli şekilde güncelle
-            let new_omega = (NOMINAL_OMEGA as i32 + omega_delta as i32).clamp(25132, 37700) as i32;
-            state.omega = new_omega;
-
-            // Faz açısını güncelle
-            state.theta = state
-                .theta
-                .wrapping_add(((state.omega as i32 * TS as i32) >> 15) as u16);
+            // SOGI-PLL güncelleme
+            let (v_alpha, v_beta, omega) = state.update(value);
 
             // DAC çıkışı
             if let Some(dac) = DAC.get() {
@@ -183,7 +238,6 @@ fn adc_callback(idx: usize, value: i16) {
         }
     }
 
-    // Performans ölçümü: Bitiş ve saklama
     let end = usage::get_cycle_count();
     usage::set_last_cycles(end.wrapping_sub(start));
 }
@@ -197,12 +251,29 @@ async fn display_task() {
     // SOGI-PLL durumunu başlat
     let sogi_state = SOGI_STATE.init(Mutex::new(SogiPllState::new()));
     SOGI_STATE_REF.call_once(|| sogi_state);
+
     let mut theta_scaled: u16 = 0;
-    let mut v_test: i16 = 0;
+    let mut v_mid: i16 = 0;
+    let mut v_alpha: i16 = 0;
+    let mut v_beta: i16 = 0;
+    let mut omega: i32 = 0;
+    let mut input: i16 = 0;
+    let mut phase_error: i16 = 0;
+    let mut raw_adc: i16 = 0;
+    let mut raw_error: i32 = 0;
+
     loop {
-        if let Ok(state) = SOGI_STATE_REF.get().unwrap().lock() {
+        if let Ok(mut state) = SOGI_STATE_REF.get().unwrap().lock() {
             theta_scaled = state.theta;
-            v_test = state.v_mid;
+            v_mid = state.v_mid;
+            v_alpha = state.v_alpha;
+            v_beta = state.v_beta;
+            omega = state.omega;
+            input = state.last_input;
+            raw_adc = state.last_raw_adc;
+            let (pe, re) = state.phase_error(v_beta, theta_scaled);
+            phase_error = pe;
+            raw_error = re;
         }
         if let Some(display) = DISPLAY.get() {
             display.clear();
@@ -219,7 +290,18 @@ async fn display_task() {
         }
         unsafe {
             use core::ffi::c_int;
-            printk(b"V_TEST: %d \n\0".as_ptr(), v_test as c_int);
+            printk(
+                b">V_MID: %d, V_ALPHA: %d, V_BETA: %d, OMEGA: %d, THETA: %d, INPUT: %d, P_ERR: %d, RAW_ADC: %d, RAW_ERR: %d\n\0".as_ptr(),                 
+                v_mid as c_int,
+                v_alpha as c_int,
+                v_beta as c_int,
+                omega as c_int,
+                theta_scaled as c_int,
+                input as c_int,
+                phase_error as c_int,
+                raw_adc as c_int,
+                raw_error as c_int,
+            );
         }
         Timer::after(Duration::from_millis(100)).await;
     }
@@ -249,7 +331,7 @@ async fn main(_spawner: Spawner) {
     // ADC’yi başlat
     let mut adc = Adc::new();
     adc.read_async(
-        Duration::from_micros(100).into(), // 10 kHz (100 µs)
+        Duration::from_micros(1000).into(), // 1 kHz (1000 µs)
         Some(adc_callback),
     );
 
