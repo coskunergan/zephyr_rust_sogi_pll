@@ -114,7 +114,7 @@ impl SogiPllState {
             pid: PidState {
                 i_sum: 0,
                 sat_err: 0,
-                kp: 1638400,      // 50.0 * 2^15
+                kp: 24576000,     // 750.0 * 2^15
                 ki: 65536,        // 2.0 * 2^15
                 kc: 32768,        // 1.0 * 2^15
                 i_min: -13508845, // -(50.0 + 15.0) * 2π * 2^15
@@ -122,10 +122,10 @@ impl SogiPllState {
             },
             launch_loop: false,
             sample_index: 0,
-            omega: 10294367, //q15_mul(TARGET_FREQ_Q15 , TAU_Q15),
+            omega: 10294367, // 50.0 * 2π * 2^15
             cur_phase: 0,
-            auto_offset_min: MAX,
-            auto_offset_max: MIN,
+            auto_offset_min: 50331648, // 1536.0 * 2^15
+            auto_offset_max: 83886080, // 2560.0 * 2^15
             sogi_s1: 0,
             sogi_s2: 0,
             last_error: 0,
@@ -137,18 +137,17 @@ impl SogiPllState {
         self.pid.sat_err = 0;
         self.launch_loop = false;
         self.sample_index = 0;
-        self.omega = 10294367; //q15_mul(TARGET_FREQ_Q15 , TAU_Q15),
+        self.omega = 10294367;
         self.cur_phase = 0;
-        self.auto_offset_min = MAX;
-        self.auto_offset_max = MIN;
+        self.auto_offset_min = 50331648;
+        self.auto_offset_max = 83886080;
         self.sogi_s1 = 0;
         self.sogi_s2 = 0;
         self.last_error = 0;
     }
 
     fn is_lock(&self, th: i32) -> bool {
-        /*self.launch_loop && float_to_q16_15(self.last_error.abs()) < th*/
-        true
+        self.launch_loop && self.last_error.abs() < th
     }
 }
 
@@ -218,10 +217,7 @@ fn spll_transfer_1phase(val: i32, state: &mut SogiPllState) {
         if val < state.auto_offset_min {
             state.auto_offset_min = val;
         }
-        let mid = q15_mul(
-            q15_add(state.auto_offset_min, state.auto_offset_max),
-            16384,
-        ); // 0.5 * 2^15
+        let mid = q15_mul(q15_add(state.auto_offset_min, state.auto_offset_max), 16384); // 0.5 * 2^15
         q15_sub(val, mid)
     };
 
@@ -236,19 +232,14 @@ fn spll_transfer_1phase(val: i32, state: &mut SogiPllState) {
     }
 
     // Normalizasyon
-    let v = q15_div(
-        v_org,
-        q15_sub(state.auto_offset_max, state.auto_offset_min),
-    );
+    let denom = q15_sub(state.auto_offset_max, state.auto_offset_min).max(32768); // 1.0 * 2^15
+    let v = q15_div(v_org, denom);
 
     // SOGI
     const K_Q15: i32 = 46334; // 1.414 * 2^15
     const W_Q15: i32 = 10294367; // 50.0 * 2π * 2^15
     let sogi_u = q15_mul(
-        q15_mul(
-            K_Q15,
-            q15_sub(q15_sub(v, state.sogi_s1), state.sogi_s2),
-        ),
+        q15_sub(q15_mul(K_Q15, q15_sub(v, state.sogi_s1)), state.sogi_s2),
         W_Q15,
     );
     state.sogi_s1 = q15_add(state.sogi_s1, q15_mul(T_Q15, sogi_u));
@@ -257,12 +248,9 @@ fn spll_transfer_1phase(val: i32, state: &mut SogiPllState) {
     // VCO (Park)
     let ua = state.sogi_s1;
     let ub = state.sogi_s2;
-    //let theta = (360.0 / TAU) * state.cur_phase;
     let theta = q15_mul(state.cur_phase, 1878420); // 360.0 / (2π) * 2^15 ≈ 57.2958 * 2^15
-                                                   //let st = fast_sin(theta * TAU / 360.0);
     let st = fast_sin(q15_mul(theta, 571)); // (2π / 360.0) * 2^15 ≈ 0.0174533 * 2^15
-                                             //let ct = fast_cos(theta * TAU / 360.0);
-    let ct = fast_cos(q15_mul(theta, 571)); // (2π / 360.0) * 2^15 ≈ 0.0174533 * 2^15
+    let ct = fast_cos(q15_mul(theta, 571));
     let uq = q15_sub(q15_mul(ct, ub), q15_mul(st, ua));
 
     // PI
@@ -299,10 +287,8 @@ fn adc_callback(idx: usize, value: i16) {
             if let Some(dac) = DAC.get() {
                 let sin_value = fast_sin(q15_add(state.cur_phase, 2949120)); // 90.0 * 57.2958 * 2^15
                 let amplitude = if state.is_lock(33) {
-                    // 1e-3 * 2^15 ≈ 0.032768 * 2^15
                     let amp =
-                        q15_to_float(q15_sub(state.auto_offset_max, state.auto_offset_min))
-                            * 0.5;
+                        q15_to_float(q15_sub(state.auto_offset_max, state.auto_offset_min)) * 0.5;
                     (amp * 2048.0).min(2048.0) // Maksimum genlik 2048
                 } else {
                     2048.0
@@ -330,7 +316,6 @@ async fn display_task() {
     loop {
         if let Ok(state) = SOGI_STATE_REF.get().unwrap().lock() {
             theta_scaled = (q15_to_float(q15_mul(state.cur_phase, 318)) as u16).min(65535);
-            // 65535.0 / (2π) * 2^15
         }
         if let Some(display) = DISPLAY.get() {
             display.clear();
