@@ -37,32 +37,67 @@ mod usage;
 
 // Sabitler
 const Q15_SHIFT: i32 = 15;
-const Q15: i32 = 1 << Q15_SHIFT;
-const PI_Q15: i32 = (consts::PI * (Q15 as f32)) as i32; // π ≈ 3.141592653589793 * 2^15
-const TAU_Q15: i32 = 205887; // 2π ≈ 6.283185307179586 * 2^15
-const MAX_Q15: i32 = 134217728; // 4096.0 * 2^15
-const T_Q15: i32 = 8; // 1.0 / 4000.0 * 2^15 = 0.00025 * 2^15
-const MAX: i32 = 4096;
-const MIN: i32 = 0;
-const TARGET_FREQ_Q15: i32 = 1638400; // 50.0 * 2^15
+const Q15_SCALE: f32 = (1 << Q15_SHIFT) as f32; // Q15 ölçeklendirme faktörü (2^15)
+const TWO_PI: f32 = consts::PI * 2.0; // 2π ≈ 6.283185307179586
 
-const TARGET_FREQ: f32 = 50.0;
-const T: f32 = 1.0 / 4000.0; // 4 kHz
-const N_SAMPLE: usize = (1.0 / T / TARGET_FREQ) as usize; // 4000 / 50 = 80
+// Frekans değişkenleri
+const SAMPLE_FREQ: f32 = 4000.0; // 4 KHz
+const TARGET_FREQ: f32 = 50.0; // 50 Hz
+
+// Q15 formatında temel sabitler
+const PI_Q15: i32 = (consts::PI * Q15_SCALE) as i32; // π * 2^15 ≈ 102944
+const TAU_Q15: i32 = (TWO_PI * Q15_SCALE) as i32; // 2π * 2^15 ≈ 205887
+const T_Q15: i32 = ((1.0 / SAMPLE_FREQ as f32) * Q15_SCALE) as i32;
+
+// Giriş Limit Değerleri
+const INPUT_MAX: i32 = 4095;
+const INPUT_MIN: i32 = 0;
+
+const T: f32 = 1.0 / SAMPLE_FREQ as f32; // x kHz
+const N_SAMPLE: usize = (1.0 / T / TARGET_FREQ) as usize;
+
+// PID parametreleri (algoritmik olarak belirlenmiş)
+const PID_KP_FLOAT: f32 = 750.0; // Proportional kazanç
+const PID_KI_FLOAT: f32 = 2.0; // Integral kazanç
+const PID_KC_FLOAT: f32 = 1.0; // Anti-windup kazancı
+const PID_FREQ_RANGE: f32 = 25.0; // Frekans sapma aralığı (±25 Hz)
+const NOMINAL_FREQ: f32 = 50.0; // Nominal frekans (50 Hz)
+
+// Otomatik ofset sınırları (algoritmik olarak belirlenmiş)
+const OFFSET_STEP_COEFF: i32 = 10000; // Ofset güncelleme adımı
+
+// SOGI parametreleri
+const SOGI_K_FLOAT: f32 = 1.4142135623730951; // SOGI kazancı (√2)
+const ANGLE_TO_RAD_SCALE: f32 = 360.0 / TWO_PI; // Dereceyi radyana çevirme (360/(2π) ≈ 57.2958)
+const RAD_TO_ANGLE_SCALE: f32 = TWO_PI / 360.0; // Radyanı dereceye çevirme (2π/360 ≈ 0.0174533)
+
+// PID_I_MIN ve PID_I_MAX için hassas hesaplama
+const FREQ_LIMIT: f32 = NOMINAL_FREQ + PID_FREQ_RANGE;
+const ANGULAR_FREQ: f32 = FREQ_LIMIT * TWO_PI;
+const PID_I_MAX: i32 = (ANGULAR_FREQ * Q15_SCALE) as i32;
+const PID_I_MIN: i32 = (-ANGULAR_FREQ * Q15_SCALE) as i32;
+
+// Q15 formatında diğer sabitler
+const PID_KP: i32 = (PID_KP_FLOAT * Q15_SCALE) as i32; // 750.0 * 2^15 ≈ 24576000
+const PID_KI: i32 = (PID_KI_FLOAT * Q15_SCALE) as i32; // 2.0 * 2^15 ≈ 65536
+const PID_KC: i32 = (PID_KC_FLOAT * Q15_SCALE) as i32; // 1.0 * 2^15 ≈ 32768
+const INITIAL_OMEGA: i32 = (NOMINAL_FREQ * TWO_PI * Q15_SCALE) as i32; // 50 * 2π * 2^15 ≈ 10294367
+const OFFSET_STEP: i32 = (((INPUT_MAX - INPUT_MIN) * Q15_SCALE as i32) / OFFSET_STEP_COEFF) as i32;
+const SOGI_K: i32 = (SOGI_K_FLOAT * Q15_SCALE) as i32; // √2 * 2^15 ≈ 46334
+const ANGLE_TO_RAD: i32 = (ANGLE_TO_RAD_SCALE * Q15_SCALE) as i32; // 360/(2π) * 2^15 ≈ 1878420
+const RAD_TO_ANGLE: i32 = (RAD_TO_ANGLE_SCALE * Q15_SCALE) as i32; // 2π/360 * 2^15 ≈ 571
+const HALF_SCALE: i32 = (0.5 * Q15_SCALE) as i32; // 0.5 * 2^15 ≈ 16384
+const DEFAULT_DENOM: i32 = (1.0 * Q15_SCALE) as i32; // 1.0 * 2^15 ≈ 32768
+
+// Faz ofseti (90 derece)
+const PHASE_OFFSET_90: i32 = (90.0 * Q15_SCALE) as i32; // 90 * 2^15 ≈ 2949120
+
+// Ekran için faz skalası
+const THETA_SCALE: i32 = (360.0 / (TWO_PI * 180.0) * Q15_SCALE) as i32; // Faz açısını ekrana uygun ölçeklendirme ≈ 318
 
 // Q16.15 aritmetik fonksiyonları
-const fn float_to_q15(value: f32) -> i32 {
-    let scaled = value * 32768.0;
-    let rounded = if scaled >= 0.0 {
-        (scaled + 0.5) as i32
-    } else {
-        (scaled - 0.5) as i32
-    };
-    rounded
-}
-
 fn q15_to_float(value: i32) -> f32 {
-    value as f32 / Q15 as f32
+    value as f32 / Q15_SCALE
 }
 
 fn q15_mul(a: i32, b: i32) -> i32 {
@@ -114,18 +149,18 @@ impl SogiPllState {
             pid: PidState {
                 i_sum: 0,
                 sat_err: 0,
-                kp: 24576000,     // 750.0 * 2^15
-                ki: 65536,        // 2.0 * 2^15
-                kc: 32768,        // 1.0 * 2^15
-                i_min: -13508845, // -(50.0 + 15.0) * 2π * 2^15
-                i_max: 13508845,  // (50.0 + 15.0) * 2π * 2^15
+                kp: PID_KP,
+                ki: PID_KI,
+                kc: PID_KC,
+                i_min: PID_I_MIN,
+                i_max: PID_I_MAX,
             },
             launch_loop: false,
             sample_index: 0,
-            omega: 10294367, // 50.0 * 2π * 2^15
+            omega: INITIAL_OMEGA,
             cur_phase: 0,
-            auto_offset_min: 50331648, // 1536.0 * 2^15
-            auto_offset_max: 83886080, // 2560.0 * 2^15
+            auto_offset_min: INPUT_MAX * Q15_SCALE as i32,
+            auto_offset_max: INPUT_MIN * Q15_SCALE as i32,
             sogi_s1: 0,
             sogi_s2: 0,
             last_error: 0,
@@ -137,10 +172,10 @@ impl SogiPllState {
         self.pid.sat_err = 0;
         self.launch_loop = false;
         self.sample_index = 0;
-        self.omega = 10294367;
+        self.omega = INITIAL_OMEGA;
         self.cur_phase = 0;
-        self.auto_offset_min = 50331648;
-        self.auto_offset_max = 83886080;
+        self.auto_offset_min = INPUT_MAX * Q15_SCALE as i32;
+        self.auto_offset_max = INPUT_MIN * Q15_SCALE as i32;
         self.sogi_s1 = 0;
         self.sogi_s2 = 0;
         self.last_error = 0;
@@ -153,6 +188,9 @@ impl SogiPllState {
 
 // Hızlı sinüs yaklaşıklığı (Q16.15 formatında)
 fn fast_sin(theta: i32) -> i32 {
+    const SIN_COEFF: i32 = ((consts::PI / 4.0) * Q15_SCALE) as i32; // π/4 * 2^15 ≈ 25736
+    const SIN_CUBIC_COEFF: i32 = ((1.0 / 6.0) * Q15_SCALE) as i32; // 1/6 * 2^15 ≈ 5461
+
     let mut theta = theta % TAU_Q15; // 0..2π
     if theta < 0 {
         theta += TAU_Q15;
@@ -170,12 +208,12 @@ fn fast_sin(theta: i32) -> i32 {
         sign = -1;
     }
 
-    let x_scaled = q15_mul(x, 25735); // 51471.0 / 65536.0 * 2^15 ≈ 0.7854 * 2^15
+    let x_scaled = q15_mul(x, SIN_COEFF);
     let x2 = q15_mul(x_scaled, x_scaled);
     let x3 = q15_mul(x2, x_scaled);
-    let sin_x = q15_sub(x_scaled, q15_mul(x3, 5456)); // 5461.0 / 32768.0 * 2^15 ≈ 0.1666 * 2^15
+    let sin_x = q15_sub(x_scaled, q15_mul(x3, SIN_CUBIC_COEFF));
 
-    q15_mul(sin_x, sign * Q15)
+    q15_mul(sin_x, sign * Q15_SCALE as i32)
 }
 
 // Hızlı kosinüs
@@ -209,15 +247,15 @@ fn pi_transfer(e: i32, pid: &mut PidState) -> i32 {
 fn spll_transfer_1phase(val: i32, state: &mut SogiPllState) {
     // Otomatik ofset
     let v_org = {
-        state.auto_offset_max = q15_sub(state.auto_offset_max, 13421); // 4096.0 / 1e4 * 2^15
-        state.auto_offset_min = q15_add(state.auto_offset_min, 13421); // 4096.0 / 1e4 * 2^15
+        state.auto_offset_max = q15_sub(state.auto_offset_max, OFFSET_STEP);
+        state.auto_offset_min = q15_add(state.auto_offset_min, OFFSET_STEP);
         if val > state.auto_offset_max {
             state.auto_offset_max = val;
         }
         if val < state.auto_offset_min {
             state.auto_offset_min = val;
         }
-        let mid = q15_mul(q15_add(state.auto_offset_min, state.auto_offset_max), 16384); // 0.5 * 2^15
+        let mid = q15_mul(q15_add(state.auto_offset_min, state.auto_offset_max), HALF_SCALE); // 0.5 * 2^15
         q15_sub(val, mid)
     };
 
@@ -232,7 +270,7 @@ fn spll_transfer_1phase(val: i32, state: &mut SogiPllState) {
     }
 
     // Normalizasyon
-    let denom = q15_sub(state.auto_offset_max, state.auto_offset_min).max(32768); // 1.0 * 2^15
+    let denom = q15_sub(state.auto_offset_max, state.auto_offset_min).max(DEFAULT_DENOM);
     let v = q15_div(v_org, denom);
 
     // SOGI
@@ -248,9 +286,9 @@ fn spll_transfer_1phase(val: i32, state: &mut SogiPllState) {
     // VCO (Park)
     let ua = state.sogi_s1;
     let ub = state.sogi_s2;
-    let theta = q15_mul(state.cur_phase, 1878420); // 360.0 / (2π) * 2^15 ≈ 57.2958 * 2^15
-    let st = fast_sin(q15_mul(theta, 571)); // (2π / 360.0) * 2^15 ≈ 0.0174533 * 2^15
-    let ct = fast_cos(q15_mul(theta, 571));
+    let theta = q15_mul(state.cur_phase, ANGLE_TO_RAD);
+    let st = fast_sin(q15_mul(theta, RAD_TO_ANGLE));
+    let ct = fast_cos(q15_mul(theta, RAD_TO_ANGLE));
     let uq = q15_sub(q15_mul(ct, ub), q15_mul(st, ua));
 
     // PI
@@ -281,11 +319,11 @@ fn adc_callback(idx: usize, value: i16) {
     if idx == 0 {
         if let Ok(mut state) = SOGI_STATE_REF.get().unwrap().lock() {
             // SOGI-PLL
-            spll_transfer_1phase(value as i32 * Q15, &mut state);
+            spll_transfer_1phase(value as i32 * Q15_SCALE as i32, &mut state);
 
             // DAC çıkışı (0-4095 aralığında)
             if let Some(dac) = DAC.get() {
-                let sin_value = fast_sin(q15_add(state.cur_phase, 2949120)); // 90.0 * 57.2958 * 2^15
+                let sin_value = fast_sin(q15_add(state.cur_phase, PHASE_OFFSET_90)); 
                 let amplitude = if state.is_lock(33) {
                     let amp =
                         q15_to_float(q15_sub(state.auto_offset_max, state.auto_offset_min)) * 0.5;
@@ -315,11 +353,16 @@ async fn display_task() {
     let mut theta_scaled: u16 = 0;
     loop {
         if let Ok(state) = SOGI_STATE_REF.get().unwrap().lock() {
-            theta_scaled = (q15_to_float(q15_mul(state.cur_phase, 318)) as u16).min(65535);
+            theta_scaled = (q15_to_float(q15_mul(state.cur_phase, THETA_SCALE)) as u16).min(65535);
         }
         if let Some(display) = DISPLAY.get() {
             display.clear();
-            let msg = format!("T:{:<5} C:{:<6}", theta_scaled, usage::get_last_cycles());
+            let msg = format!(
+                "T:{:<5} C:{:<6} M: {}",
+                theta_scaled,
+                usage::get_last_cycles(),
+                INITIAL_OMEGA
+            );
             display.write(msg.as_bytes());
         }
         Timer::after(Duration::from_millis(100)).await;
