@@ -58,13 +58,13 @@ const N_SAMPLE: usize = (1.0 / T / TARGET_FREQ) as usize;
 
 // PID parametreleri (algoritmik olarak belirlenmiş)
 const PID_KP_FLOAT: f32 = 750.0; // Proportional kazanç
-const PID_KI_FLOAT: f32 = 20.0; // Integral kazanç
+const PID_KI_FLOAT: f32 = 15.0; // Integral kazanç
 const PID_KC_FLOAT: f32 = 10.0; // Anti-windup kazancı
-const PID_FREQ_RANGE: f32 = 25.0; // Frekans sapma aralığı (±25 Hz)
+const PID_FREQ_RANGE: f32 = 15.0; // Frekans sapma aralığı (±25 Hz)
 const NOMINAL_FREQ: f32 = 50.0; // Nominal frekans (50 Hz)
 
 // Otomatik ofset sınırları (algoritmik olarak belirlenmiş)
-const OFFSET_STEP_COEFF: i32 = 10000; // Ofset güncelleme adımı
+const OFFSET_STEP_COEFF: i32 = (1e4) as i32; // Ofset güncelleme adımı
 
 // SOGI parametreleri
 const SOGI_K_FLOAT: f32 = 1.4142135623730951; // SOGI kazancı (√2)
@@ -93,7 +93,7 @@ const DEFAULT_DENOM: i32 = (1.0 * Q15_SCALE) as i32; // 1.0 * 2^15 ≈ 32768
 const THETA_SCALE: i32 = (360.0 / (TWO_PI * 180.0) * Q15_SCALE) as i32; // Faz açısını ekrana uygun ölçeklendirme ≈ 318
 
 // Faz ofseti (90 derece)
-const PHASE_OFFSET: i32 = (0.0 * Q15_SCALE) as i32; 
+const PHASE_OFFSET: i32 = ((consts::PI / 2.0) * Q15_SCALE) as i32; 
 
 // Q16.15 aritmetik fonksiyonları
 fn q15_to_float(value: i32) -> f32 {
