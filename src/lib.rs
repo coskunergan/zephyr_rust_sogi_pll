@@ -57,7 +57,7 @@ const T: f32 = 1.0 / SAMPLE_FREQ as f32; // x kHz
 const N_SAMPLE: usize = (1.0 / T / TARGET_FREQ) as usize;
 
 // PID parametreleri (algoritmik olarak belirlenmiş)
-const PID_KP_FLOAT: f32 = 750.0; // Proportional kazanç
+const PID_KP_FLOAT: f32 = 150.0; // Proportional kazanç
 const PID_KI_FLOAT: f32 = 15.0; // Integral kazanç
 const PID_KC_FLOAT: f32 = 10.0; // Anti-windup kazancı
 const PID_FREQ_RANGE: f32 = 15.0; // Frekans sapma aralığı (±25 Hz)
@@ -278,14 +278,12 @@ fn spll_transfer_1phase(val: i32, state: &mut SogiPllState) {
     let v = q15_div(v_org, denom);
 
     // SOGI
-    const K_Q15: i32 = 46334; // 1.414 * 2^15
-    const W_Q15: i32 = 10294367; // 50.0 * 2π * 2^15
     let sogi_u = q15_mul(
-        q15_sub(q15_mul(K_Q15, q15_sub(v, state.sogi_s1)), state.sogi_s2),
-        W_Q15,
+        q15_sub(q15_mul(SOGI_K, q15_sub(v, state.sogi_s1)), state.sogi_s2),
+        INITIAL_OMEGA,
     );
     state.sogi_s1 = q15_add(state.sogi_s1, q15_mul(T_Q15, sogi_u));
-    state.sogi_s2 = q15_add(state.sogi_s2, q15_mul(T_Q15, q15_mul(W_Q15, state.sogi_s1)));
+    state.sogi_s2 = q15_add(state.sogi_s2, q15_mul(T_Q15, q15_mul(INITIAL_OMEGA, state.sogi_s1)));
 
     // VCO (Park)
     let ua = state.sogi_s1;
@@ -360,23 +358,59 @@ async fn display_task() {
     let display = Display::new();
     DISPLAY.call_once(|| display);
 
-    Timer::after(Duration::from_millis(100)).await;
+//    Timer::after(Duration::from_millis(100)).await;
 
-    let mut theta_scaled: u16 = 0;
+    let sogi_state = SOGI_STATE.init(Mutex::new(SogiPllState::new()));
+    SOGI_STATE_REF.call_once(|| sogi_state);
+
+    let mut theta_scaled: f32  = 0.0;
+    let mut omega: f32 = 0.0;
+    let mut cur_phase: f32 = 0.0;
+    let mut auto_offset_min: f32 = 0.0;
+    let mut auto_offset_max: f32 = 0.0;
+    let mut sogi_s1: f32 = 0.0;
+    let mut sogi_s2: f32 = 0.0;
+    let mut last_error: f32 = 0.0;    
+
     loop {
         if let Ok(state) = SOGI_STATE_REF.get().unwrap().lock() {
-            theta_scaled = (q15_to_float(q15_mul(state.cur_phase, THETA_SCALE)) as u16).min(65535);
+            theta_scaled = q15_to_float(q15_mul(state.cur_phase, THETA_SCALE));
+            auto_offset_min = state.auto_offset_min as f32 / Q15_SCALE;
+            auto_offset_max = state.auto_offset_max  as f32 / Q15_SCALE;
+            omega = state.omega as f32 / Q15_SCALE;
+            sogi_s1 = state.sogi_s1 as f32 / Q15_SCALE;
+            sogi_s2 = state.sogi_s2 as f32 / Q15_SCALE;            
+            last_error = state.last_error as f32 / Q15_SCALE;  
         }
         if let Some(display) = DISPLAY.get() {
             display.clear();
             let msg = format!(
-                "T:{:<5} C:{:<6} M: {}",
-                theta_scaled,
-                usage::get_last_cycles(),
-                INITIAL_OMEGA
+                "T:{:.3}         F:{:<2}    T:{:<4}nS",
+                theta_scaled,                
+                50,
+                usage::get_last_cycles(),                
             );
             display.write(msg.as_bytes());
         }
+
+                // Hata ayıklama
+        extern "C" {
+            fn printk(fmt: *const u8, ...);
+        }
+        unsafe {
+            use core::ffi::c_int;
+            let msg = format!(">OF_MAX:{:.3}, OF_MIN:{:.3}, OMEGA:{:.3}, THETA:{:.3}, S1:{:.3}, S2:{:.3}, ERR:{:.3}\n\0",
+            auto_offset_min,
+                auto_offset_max,              
+                omega,
+                theta_scaled,
+                sogi_s1,
+                sogi_s2,
+                last_error
+        );
+            printk(msg.as_ptr());
+        }
+
         Timer::after(Duration::from_millis(100)).await;
     }
 }
@@ -401,9 +435,6 @@ extern "C" fn rust_main() {
 async fn main(_spawner: Spawner) {
     let dac = Dac::new();
     DAC.call_once(|| dac);
-
-    let sogi_state = SOGI_STATE.init(Mutex::new(SogiPllState::new()));
-    SOGI_STATE_REF.call_once(|| sogi_state);
 
     let mut adc = Adc::new();
     adc.read_async_isr(
