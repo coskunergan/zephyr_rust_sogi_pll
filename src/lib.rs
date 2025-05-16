@@ -183,9 +183,7 @@ impl SogiPllState {
     }
 
     fn is_lock(&self, th: i32) -> bool {
-        /*self.launch_loop && self.last_error.abs() < th*/
-        // will not implement!
-        true
+        self.launch_loop && self.last_error.abs() < th
     }
 }
 
@@ -356,6 +354,7 @@ async fn display_task() {
     let mut sogi_s2: f32 = 0.0;
     let mut last_error: f32 = 0.0;
     let mut duration_ns: u32 = 0;
+    let mut lock: bool = false;
 
     loop {
         Timer::after(Duration::from_millis(100)).await;
@@ -370,12 +369,13 @@ async fn display_task() {
             sogi_s2 = state.sogi_s2 as f32 / Q15_SCALE;
             last_error = state.last_error as f32 / Q15_SCALE;
             duration_ns = state.duration_ns;
+            lock = state.is_lock((30e-3 * Q15_SCALE)as i32);
         }
         if let Some(display) = DISPLAY.get() {
             display.clear();
             let msg = format!(
-                "T:{:.3}         F:{}    T:{:<4}nS",
-                theta_scaled, freq as u8, duration_ns
+                "sPLL:{}   F:{:<2}Hz   T: {:.2} uS",
+                lock as u8, freq as u8, (duration_ns as f32 / 1e3)
             );
             display.write(msg.as_bytes());
         }
