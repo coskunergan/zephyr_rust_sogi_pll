@@ -16,13 +16,12 @@ use embassy_executor::Executor;
 use zephyr::embassy::Executor;
 
 use core::f32::consts;
-use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use spin::Once;
 use static_cell::StaticCell;
-use zephyr::sync::{Arc, Mutex};
+use zephyr::sync::Mutex;
 
 use adc_io::Adc;
 use dac_io::Dac;
@@ -41,7 +40,6 @@ const TWO_PI: f32 = consts::PI * 2.0; // 2π ≈ 6.283185307179586
 // Frekans değişkenleri
 const SAMPLE_FREQ: f32 = 2500.0; // Hz
 const TARGET_FREQ: f32 = 50.0; // 50 Hz
-const CLOCK_CORRECTION: f32 = 1.0; // 1.0
 
 // Q15 formatında temel sabitler
 const PI_Q15: i32 = (consts::PI * Q15_SCALE) as i32; // π * 2^15 ≈ 102944
@@ -167,7 +165,7 @@ impl SogiPllState {
             duration_ns: 0,
         }
     }
-
+    #[allow(dead_code)]
     fn reset(&mut self) {
         self.pid.i_sum = 0;
         self.pid.sat_err = 0;
@@ -427,7 +425,7 @@ async fn main(_spawner: Spawner) {
 
     let mut adc = Adc::new();
     adc.read_async_isr(
-        Duration::from_micros(((1e6 / SAMPLE_FREQ) * CLOCK_CORRECTION) as u64).into(),
+        Duration::from_micros((1e6 / SAMPLE_FREQ) as u64).into(),
         Some(adc_callback),
     );
 
