@@ -7,8 +7,6 @@
 extern crate alloc;
 
 use alloc::format;
-use core::convert::TryInto;
-use core::ffi::c_double;
 use embassy_time::{Duration, Timer};
 
 #[cfg(feature = "executor-thread")]
@@ -132,6 +130,7 @@ struct SogiPllState {
     sogi_s1: i32,
     sogi_s2: i32,
     last_error: i32,
+    duration_ns: u32,
 }
 
 struct PidState {
@@ -165,6 +164,7 @@ impl SogiPllState {
             sogi_s1: 0,
             sogi_s2: 0,
             last_error: 0,
+            duration_ns: 0,
         }
     }
 
@@ -318,12 +318,12 @@ static SOGI_STATE_REF: Once<&'static Mutex<SogiPllState>> = Once::new();
 
 // ADC geri çağrı fonksiyonu
 fn adc_callback(idx: usize, value: i16) {
-    let start = usage::get_cycle_count();
-
     if idx == 0 {
         if let Ok(mut state) = SOGI_STATE_REF.get().unwrap().lock() {
             // SOGI-PLL
-            spll_update(value as i32 * Q15_SCALE as i32, &mut state);
+            state.duration_ns = usage::measure_function_duration_ns(|| {
+                spll_update(value as i32 * Q15_SCALE as i32, &mut state)
+            }) as u32;
 
             // DAC çıkışı (0-4095 aralığında)
             if let Some(dac) = DAC.get() {
@@ -340,9 +340,6 @@ fn adc_callback(idx: usize, value: i16) {
             }
         }
     }
-
-    let end = usage::get_cycle_count();
-    usage::set_last_cycles(end.wrapping_sub(start));
 }
 
 #[embassy_executor::task]
@@ -358,9 +355,9 @@ async fn display_task() {
     let mut sogi_s1: f32 = 0.0;
     let mut sogi_s2: f32 = 0.0;
     let mut last_error: f32 = 0.0;
+    let mut duration_ns: u32 = 0;
 
     loop {
-    
         Timer::after(Duration::from_millis(100)).await;
 
         if let Ok(state) = SOGI_STATE_REF.get().unwrap().lock() {
@@ -372,14 +369,13 @@ async fn display_task() {
             sogi_s1 = state.sogi_s1 as f32 / Q15_SCALE;
             sogi_s2 = state.sogi_s2 as f32 / Q15_SCALE;
             last_error = state.last_error as f32 / Q15_SCALE;
+            duration_ns = state.duration_ns;
         }
         if let Some(display) = DISPLAY.get() {
             display.clear();
             let msg = format!(
-                "T:{:.3}         F:{:.1}  T:{:<4}nS",
-                theta_scaled,
-                freq, // Frekansı yazdır
-                usage::get_last_cycles(),
+                "T:{:.3}         F:{}    T:{:<4}nS",
+                theta_scaled, freq as u8, duration_ns
             );
             display.write(msg.as_bytes());
         }
@@ -389,7 +385,7 @@ async fn display_task() {
         }
         unsafe {
             let msg = format!(
-                ">OF_MAX:{:.3}, OF_MIN:{:.3}, OMEGA:{:.3}, THETA:{:.3}, S1:{:.3}, S2:{:.3}, ERR:{:.3}, FREQ:{:.3}\n\0",
+                ">OF_MAX:{:.3}, OF_MIN:{:.3}, OMEGA:{:.3}, THETA:{:.3}, S1:{:.3}, S2:{:.3}, ERR:{:.3}, FREQ:{:.3}, D_TIME:{}\n\0",
                 auto_offset_min,
                 auto_offset_max,
                 omega,
@@ -397,7 +393,8 @@ async fn display_task() {
                 sogi_s1,
                 sogi_s2,
                 last_error,
-                freq
+                freq,
+                duration_ns
             );
             printk(msg.as_ptr());
         }
