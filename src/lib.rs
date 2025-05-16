@@ -41,7 +41,7 @@ const Q15_SCALE: f32 = (1 << Q15_SHIFT) as f32; // Q15 ölçeklendirme faktörü
 const TWO_PI: f32 = consts::PI * 2.0; // 2π ≈ 6.283185307179586
 
 // Frekans değişkenleri
-const SAMPLE_FREQ: f32 = 4000.0; // 4 KHz
+const SAMPLE_FREQ: f32 = 5000.0; // 5 KHz
 const TARGET_FREQ: f32 = 50.0; // 50 Hz
 
 // Q15 formatında temel sabitler
@@ -58,8 +58,8 @@ const N_SAMPLE: usize = (1.0 / T / TARGET_FREQ) as usize;
 
 // PID parametreleri (algoritmik olarak belirlenmiş)
 const PID_KP_FLOAT: f32 = 750.0; // Proportional kazanç
-const PID_KI_FLOAT: f32 = 2.0; // Integral kazanç
-const PID_KC_FLOAT: f32 = 1.0; // Anti-windup kazancı
+const PID_KI_FLOAT: f32 = 20.0; // Integral kazanç
+const PID_KC_FLOAT: f32 = 10.0; // Anti-windup kazancı
 const PID_FREQ_RANGE: f32 = 25.0; // Frekans sapma aralığı (±25 Hz)
 const NOMINAL_FREQ: f32 = 50.0; // Nominal frekans (50 Hz)
 
@@ -89,11 +89,11 @@ const RAD_TO_ANGLE: i32 = (RAD_TO_ANGLE_SCALE * Q15_SCALE) as i32; // 2π/360 * 
 const HALF_SCALE: i32 = (0.5 * Q15_SCALE) as i32; // 0.5 * 2^15 ≈ 16384
 const DEFAULT_DENOM: i32 = (1.0 * Q15_SCALE) as i32; // 1.0 * 2^15 ≈ 32768
 
-// Faz ofseti (90 derece)
-const PHASE_OFFSET_90: i32 = (90.0 * Q15_SCALE) as i32; // 90 * 2^15 ≈ 2949120
-
 // Ekran için faz skalası
 const THETA_SCALE: i32 = (360.0 / (TWO_PI * 180.0) * Q15_SCALE) as i32; // Faz açısını ekrana uygun ölçeklendirme ≈ 318
+
+// Faz ofseti (90 derece)
+const PHASE_OFFSET: i32 = (0.0 * Q15_SCALE) as i32; 
 
 // Q16.15 aritmetik fonksiyonları
 fn q15_to_float(value: i32) -> f32 {
@@ -182,7 +182,8 @@ impl SogiPllState {
     }
 
     fn is_lock(&self, th: i32) -> bool {
-        self.launch_loop && self.last_error.abs() < th
+        /*self.launch_loop && self.last_error.abs() < th*/ // will not implement!
+        true
     }
 }
 
@@ -255,7 +256,10 @@ fn spll_transfer_1phase(val: i32, state: &mut SogiPllState) {
         if val < state.auto_offset_min {
             state.auto_offset_min = val;
         }
-        let mid = q15_mul(q15_add(state.auto_offset_min, state.auto_offset_max), HALF_SCALE); // 0.5 * 2^15
+        let mid = q15_mul(
+            q15_add(state.auto_offset_min, state.auto_offset_max),
+            HALF_SCALE,
+        ); // 0.5 * 2^15
         q15_sub(val, mid)
     };
 
@@ -323,14 +327,22 @@ fn adc_callback(idx: usize, value: i16) {
 
             // DAC çıkışı (0-4095 aralığında)
             if let Some(dac) = DAC.get() {
-                let sin_value = fast_sin(q15_add(state.cur_phase, PHASE_OFFSET_90)); 
-                let amplitude = if state.is_lock(33) {
+
+                let mut phase = q15_add(state.cur_phase, PHASE_OFFSET);
+            
+                if phase >= (Q15_SCALE * 360.0) as i32
+                {
+                    q15_sub(phase , (Q15_SCALE * 360.0) as i32);
+                }
+
+                let sin_value: i32 = fast_sin(phase);
+                let amplitude = /*if state.is_lock(33) */{
                     let amp =
                         q15_to_float(q15_sub(state.auto_offset_max, state.auto_offset_min)) * 0.5;
                     (amp * 2048.0).min(2048.0) // Maksimum genlik 2048
-                } else {
-                    2048.0
-                };
+                /*} else {
+                   2048.0
+                */};
                 let result = (q15_to_float(sin_value) * amplitude + 2048.0).clamp(0.0, 4095.0);
                 let dac_value = result as u32;
                 dac.write(dac_value);
@@ -348,8 +360,8 @@ async fn display_task() {
     let display = Display::new();
     DISPLAY.call_once(|| display);
 
-    let sogi_state = SOGI_STATE.init(Mutex::new(SogiPllState::new()));
-    SOGI_STATE_REF.call_once(|| sogi_state);
+    Timer::after(Duration::from_millis(100)).await;
+
     let mut theta_scaled: u16 = 0;
     loop {
         if let Ok(state) = SOGI_STATE_REF.get().unwrap().lock() {
@@ -390,9 +402,12 @@ async fn main(_spawner: Spawner) {
     let dac = Dac::new();
     DAC.call_once(|| dac);
 
+    let sogi_state = SOGI_STATE.init(Mutex::new(SogiPllState::new()));
+    SOGI_STATE_REF.call_once(|| sogi_state);
+
     let mut adc = Adc::new();
     adc.read_async_isr(
-        Duration::from_micros(250).into(), // 4 kHz
+        Duration::from_micros((1e6 / SAMPLE_FREQ) as u64).into(),
         Some(adc_callback),
     );
 
