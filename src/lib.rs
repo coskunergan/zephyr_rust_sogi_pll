@@ -41,8 +41,9 @@ const Q15_SCALE: f32 = (1 << Q15_SHIFT) as f32; // Q15 ölçeklendirme faktörü
 const TWO_PI: f32 = consts::PI * 2.0; // 2π ≈ 6.283185307179586
 
 // Frekans değişkenleri
-const SAMPLE_FREQ: f32 = 5000.0; // 5 KHz
+const SAMPLE_FREQ: f32 = 2500.0; // Hz
 const TARGET_FREQ: f32 = 50.0; // 50 Hz
+const CLOCK_CORRECTION: f32 = 1.0; // 1.0
 
 // Q15 formatında temel sabitler
 const PI_Q15: i32 = (consts::PI * Q15_SCALE) as i32; // π * 2^15 ≈ 102944
@@ -60,7 +61,7 @@ const N_SAMPLE: usize = (1.0 / T / TARGET_FREQ) as usize;
 const PID_KP_FLOAT: f32 = 150.0; // Proportional kazanç
 const PID_KI_FLOAT: f32 = 15.0; // Integral kazanç
 const PID_KC_FLOAT: f32 = 10.0; // Anti-windup kazancı
-const PID_FREQ_RANGE: f32 = 15.0; // Frekans sapma aralığı (±25 Hz)
+const PID_FREQ_RANGE: f32 = 15.0; // Frekans sapma aralığı (±15 Hz)
 const NOMINAL_FREQ: f32 = 50.0; // Nominal frekans (50 Hz)
 
 // Otomatik ofset sınırları (algoritmik olarak belirlenmiş)
@@ -78,9 +79,9 @@ const PID_I_MAX: i32 = (ANGULAR_FREQ * Q15_SCALE) as i32;
 const PID_I_MIN: i32 = (-ANGULAR_FREQ * Q15_SCALE) as i32;
 
 // Q15 formatında diğer sabitler
-const PID_KP: i32 = (PID_KP_FLOAT * Q15_SCALE) as i32; // 750.0 * 2^15 ≈ 24576000
-const PID_KI: i32 = (PID_KI_FLOAT * Q15_SCALE) as i32; // 2.0 * 2^15 ≈ 65536
-const PID_KC: i32 = (PID_KC_FLOAT * Q15_SCALE) as i32; // 1.0 * 2^15 ≈ 32768
+const PID_KP: i32 = (PID_KP_FLOAT * Q15_SCALE) as i32; // 150.0 * 2^15 ≈ 4915200
+const PID_KI: i32 = (PID_KI_FLOAT * Q15_SCALE) as i32; // 15.0 * 2^15 ≈ 491520
+const PID_KC: i32 = (PID_KC_FLOAT * Q15_SCALE) as i32; // 10.0 * 2^15 ≈ 327680
 const INITIAL_OMEGA: i32 = (NOMINAL_FREQ * TWO_PI * Q15_SCALE) as i32; // 50 * 2π * 2^15 ≈ 10294367
 const OFFSET_STEP: i32 = (((INPUT_MAX - INPUT_MIN) * Q15_SCALE as i32) / OFFSET_STEP_COEFF) as i32;
 const SOGI_K: i32 = (SOGI_K_FLOAT * Q15_SCALE) as i32; // √2 * 2^15 ≈ 46334
@@ -89,13 +90,13 @@ const RAD_TO_ANGLE: i32 = (RAD_TO_ANGLE_SCALE * Q15_SCALE) as i32; // 2π/360 * 
 const HALF_SCALE: i32 = (0.5 * Q15_SCALE) as i32; // 0.5 * 2^15 ≈ 16384
 const DEFAULT_DENOM: i32 = (1.0 * Q15_SCALE) as i32; // 1.0 * 2^15 ≈ 32768
 
-// Ekran için faz skalası
+// Ekran için faz
 const THETA_SCALE: i32 = (360.0 / (TWO_PI * 180.0) * Q15_SCALE) as i32; // Faz açısını ekrana uygun ölçeklendirme ≈ 318
 
 // Faz ofseti (90 derece)
-const PHASE_OFFSET: i32 = ((consts::PI / 2.0) * Q15_SCALE) as i32; 
+const PHASE_OFFSET: i32 = ((consts::PI / 2.0) * Q15_SCALE) as i32;
 
-// Q16.15 aritmetik fonksiyonları
+// Q15 aritmetik fonksiyonları
 fn q15_to_float(value: i32) -> f32 {
     value as f32 / Q15_SCALE
 }
@@ -124,7 +125,7 @@ struct SogiPllState {
     pid: PidState,
     launch_loop: bool,
     sample_index: u16,
-    omega: i32,
+    omega: i32, //2πF
     cur_phase: i32,
     auto_offset_min: i32,
     auto_offset_max: i32,
@@ -182,12 +183,12 @@ impl SogiPllState {
     }
 
     fn is_lock(&self, th: i32) -> bool {
-        /*self.launch_loop && self.last_error.abs() < th*/ // will not implement!
+        /*self.launch_loop && self.last_error.abs() < th*/
+        // will not implement!
         true
     }
 }
 
-// Hızlı sinüs yaklaşıklığı (Q16.15 formatında)
 fn fast_sin(theta: i32) -> i32 {
     const SIN_COEFF: i32 = ((consts::PI / 4.0) * Q15_SCALE) as i32; // π/4 * 2^15 ≈ 25736
     const SIN_CUBIC_COEFF: i32 = ((1.0 / 6.0) * Q15_SCALE) as i32; // 1/6 * 2^15 ≈ 5461
@@ -217,7 +218,6 @@ fn fast_sin(theta: i32) -> i32 {
     q15_mul(sin_x, sign * Q15_SCALE as i32)
 }
 
-// Hızlı kosinüs
 fn fast_cos(theta: i32) -> i32 {
     fast_sin(q15_add(theta, PI_Q15 / 2))
 }
@@ -244,8 +244,7 @@ fn pi_transfer(e: i32, pid: &mut PidState) -> i32 {
     out
 }
 
-// SOGI-PLL transfer
-fn spll_transfer_1phase(val: i32, state: &mut SogiPllState) {
+fn spll_update(val: i32, state: &mut SogiPllState) {
     // Otomatik ofset
     let v_org = {
         state.auto_offset_max = q15_sub(state.auto_offset_max, OFFSET_STEP);
@@ -283,7 +282,10 @@ fn spll_transfer_1phase(val: i32, state: &mut SogiPllState) {
         INITIAL_OMEGA,
     );
     state.sogi_s1 = q15_add(state.sogi_s1, q15_mul(T_Q15, sogi_u));
-    state.sogi_s2 = q15_add(state.sogi_s2, q15_mul(T_Q15, q15_mul(INITIAL_OMEGA, state.sogi_s1)));
+    state.sogi_s2 = q15_add(
+        state.sogi_s2,
+        q15_mul(T_Q15, q15_mul(INITIAL_OMEGA, state.sogi_s1)),
+    );
 
     // VCO (Park)
     let ua = state.sogi_s1;
@@ -321,26 +323,17 @@ fn adc_callback(idx: usize, value: i16) {
     if idx == 0 {
         if let Ok(mut state) = SOGI_STATE_REF.get().unwrap().lock() {
             // SOGI-PLL
-            spll_transfer_1phase(value as i32 * Q15_SCALE as i32, &mut state);
+            spll_update(value as i32 * Q15_SCALE as i32, &mut state);
 
             // DAC çıkışı (0-4095 aralığında)
             if let Some(dac) = DAC.get() {
-
-                let mut phase = q15_add(state.cur_phase, PHASE_OFFSET);
-            
-                if phase >= (Q15_SCALE * 360.0) as i32
-                {
-                    q15_sub(phase , (Q15_SCALE * 360.0) as i32);
-                }
-
+                let phase = q15_add(state.cur_phase, PHASE_OFFSET);
                 let sin_value: i32 = fast_sin(phase);
-                let amplitude = /*if state.is_lock(33) */{
+                let amplitude = {
                     let amp =
                         q15_to_float(q15_sub(state.auto_offset_max, state.auto_offset_min)) * 0.5;
-                    (amp * 2048.0).min(2048.0) // Maksimum genlik 2048
-                /*} else {
-                   2048.0
-                */};
+                    (amp * 2048.0).min(2048.0)
+                };
                 let result = (q15_to_float(sin_value) * amplitude + 2048.0).clamp(0.0, 4095.0);
                 let dac_value = result as u32;
                 dac.write(dac_value);
@@ -352,66 +345,62 @@ fn adc_callback(idx: usize, value: i16) {
     usage::set_last_cycles(end.wrapping_sub(start));
 }
 
-// Ekran güncelleme görevi
 #[embassy_executor::task]
 async fn display_task() {
     let display = Display::new();
     DISPLAY.call_once(|| display);
 
-//    Timer::after(Duration::from_millis(100)).await;
-
-    let sogi_state = SOGI_STATE.init(Mutex::new(SogiPllState::new()));
-    SOGI_STATE_REF.call_once(|| sogi_state);
-
-    let mut theta_scaled: f32  = 0.0;
-    let mut omega: f32 = 0.0;
-    let mut cur_phase: f32 = 0.0;
+    let mut theta_scaled: f32 = 0.0;
+    let mut freq: f32 = 0.0;
     let mut auto_offset_min: f32 = 0.0;
     let mut auto_offset_max: f32 = 0.0;
+    let mut omega: f32 = 0.0;
     let mut sogi_s1: f32 = 0.0;
     let mut sogi_s2: f32 = 0.0;
-    let mut last_error: f32 = 0.0;    
+    let mut last_error: f32 = 0.0;
 
     loop {
+    
+        Timer::after(Duration::from_millis(100)).await;
+
         if let Ok(state) = SOGI_STATE_REF.get().unwrap().lock() {
             theta_scaled = q15_to_float(q15_mul(state.cur_phase, THETA_SCALE));
+            freq = q15_to_float(state.omega) / TWO_PI;
             auto_offset_min = state.auto_offset_min as f32 / Q15_SCALE;
-            auto_offset_max = state.auto_offset_max  as f32 / Q15_SCALE;
+            auto_offset_max = state.auto_offset_max as f32 / Q15_SCALE;
             omega = state.omega as f32 / Q15_SCALE;
             sogi_s1 = state.sogi_s1 as f32 / Q15_SCALE;
-            sogi_s2 = state.sogi_s2 as f32 / Q15_SCALE;            
-            last_error = state.last_error as f32 / Q15_SCALE;  
+            sogi_s2 = state.sogi_s2 as f32 / Q15_SCALE;
+            last_error = state.last_error as f32 / Q15_SCALE;
         }
         if let Some(display) = DISPLAY.get() {
             display.clear();
             let msg = format!(
-                "T:{:.3}         F:{:<2}    T:{:<4}nS",
-                theta_scaled,                
-                50,
-                usage::get_last_cycles(),                
+                "T:{:.3}         F:{:.1}  T:{:<4}nS",
+                theta_scaled,
+                freq, // Frekansı yazdır
+                usage::get_last_cycles(),
             );
             display.write(msg.as_bytes());
         }
 
-                // Hata ayıklama
         extern "C" {
             fn printk(fmt: *const u8, ...);
         }
         unsafe {
-            use core::ffi::c_int;
-            let msg = format!(">OF_MAX:{:.3}, OF_MIN:{:.3}, OMEGA:{:.3}, THETA:{:.3}, S1:{:.3}, S2:{:.3}, ERR:{:.3}\n\0",
-            auto_offset_min,
-                auto_offset_max,              
+            let msg = format!(
+                ">OF_MAX:{:.3}, OF_MIN:{:.3}, OMEGA:{:.3}, THETA:{:.3}, S1:{:.3}, S2:{:.3}, ERR:{:.3}, FREQ:{:.3}\n\0",
+                auto_offset_min,
+                auto_offset_max,
                 omega,
                 theta_scaled,
                 sogi_s1,
                 sogi_s2,
-                last_error
-        );
+                last_error,
+                freq
+            );
             printk(msg.as_ptr());
         }
-
-        Timer::after(Duration::from_millis(100)).await;
     }
 }
 
@@ -436,9 +425,12 @@ async fn main(_spawner: Spawner) {
     let dac = Dac::new();
     DAC.call_once(|| dac);
 
+    let sogi_state = SOGI_STATE.init(Mutex::new(SogiPllState::new()));
+    SOGI_STATE_REF.call_once(|| sogi_state);
+
     let mut adc = Adc::new();
     adc.read_async_isr(
-        Duration::from_micros((1e6 / SAMPLE_FREQ) as u64).into(),
+        Duration::from_micros(((1e6 / SAMPLE_FREQ) * CLOCK_CORRECTION) as u64).into(),
         Some(adc_callback),
     );
 

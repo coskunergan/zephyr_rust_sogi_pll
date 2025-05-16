@@ -10,7 +10,9 @@ pub fn get_cycle_count() -> u32 {
 
 // LAST_CYCLES’a yazma
 pub fn set_last_cycles(value: u32) {
-    unsafe { LAST_CYCLES = value; }
+    unsafe {
+        LAST_CYCLES = value;
+    }
 }
 
 // LAST_CYCLES’tan okuma
