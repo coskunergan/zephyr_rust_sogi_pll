@@ -293,9 +293,8 @@ fn adc_callback(idx: usize, value: i16) {
                 let amp = q15_to_float(q15_sub(state.auto_offset_max, state.auto_offset_min)) * 0.5;
                 (amp * 2048.0).min(2048.0)
             };
-            let dac_value =
-                (q15_to_float(sin_value) * amplitude + 2048.0).clamp(0.0, 4095.0) as u32;
-            dac.write(4095 - dac_value);
+            let dac_value = (q15_to_float(sin_value) * amplitude + 2048.0).clamp(0.0, 4095.0) as u32;
+            dac.write(dac_value);
         }
     }
 }
