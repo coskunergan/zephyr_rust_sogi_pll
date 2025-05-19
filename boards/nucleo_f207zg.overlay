@@ -1,7 +1,7 @@
 #include "stm32f4_disco.dtsi"
 
-&i2c2 {
-	pinctrl-0 = <&i2c2_scl_pb10 &i2c2_sda_pb11>;
+&i2c3 {
+	pinctrl-0 = <&i2c3_scl_pa8 &i2c3_sda_pc9>;
 	pinctrl-names = "default";
 	status = "okay";
 	clock-frequency = <I2C_BITRATE_STANDARD>;
@@ -18,38 +18,10 @@
 	gpios {
 		compatible = "gpio-leds";
 		led_green: led_green {
-			gpios = <&gpiod 12 GPIO_ACTIVE_HIGH>;
-			label = "green led";
-		};
-		led_red: led_red {
-			gpios = <&gpiod 13 GPIO_ACTIVE_HIGH>;
-			label = "red led";
-		};		
-		led_blue: led_blue {
-			gpios = <&gpiod 15 GPIO_ACTIVE_HIGH>;
-			label = "blue led";
-		};				
-		led_orange: led_orange {
-			gpios = <&gpiod 14 GPIO_ACTIVE_HIGH>;
-			label = "orange led";
-		};		
-		button: button {
-			gpios = <&gpioa 0 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
-			label = "Button";
-		};
-		encoder_a: encoder_a {
-			gpios = <&gpioe 2 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
-			label = "Encoder A";
-		};
-		encoder_b: encoder_b {
-			gpios = <&gpioe 3 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
-			label = "Encoder B";
-		};	
-		test_pin: test_pin {
-			gpios = <&gpioe 4 (GPIO_ACTIVE_HIGH)>;
+			gpios = <&gpioa 5 (GPIO_ACTIVE_HIGH)>;
 			label = "test pin";
 		};								
-	};	
+	};		
 	zephyr,user {
 		/* adjust channel number according to pinmux in board.dts */
 		io-channels = <&adc1 10>;

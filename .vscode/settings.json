@@ -5,11 +5,13 @@
    "AppUnderDev": "${workspaceRoot}"
    },
 "bsp": {
-   "board": "stm32f4_disco",
+   //"board": "stm32f4_disco",
    //"board": "rpi_pico",
    //"board": "stm32l1_disco",
    //"board": "lpcxpresso11u68",
-   //"board": "qemu_cortex_m3",
+   //"board": "qmu_cortex_m3",
+   "board": "nucleo_f207zg",
+   
  },
  "app": {
    "name": "${config:workspaceFolder.AppUnderDev}",

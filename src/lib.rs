@@ -50,6 +50,7 @@ const PID_KC_FLOAT: f32 = 10.0;
 const PID_FREQ_RANGE: f32 = 15.0;
 const NOMINAL_FREQ: f32 = 50.0;
 const OFFSET_STEP_COEFF: i32 = (1e4) as i32;
+
 const SOGI_K_FLOAT: f32 = 1.4142135623730951;
 const ANGLE_TO_RAD_SCALE: f32 = 360.0 / TWO_PI;
 const RAD_TO_ANGLE_SCALE: f32 = TWO_PI / 360.0;
@@ -281,6 +282,8 @@ fn spll_update(val: i32, state: &mut SogiPllState) {
 
 // Statik SOGI-PLL durumu
 static SOGI_STATE_REF: Lazy<RwLock<SogiPllState>> = Lazy::new(|| RwLock::new(SogiPllState::new()));
+static DISPLAY_REF: Lazy<RwLock<Display>> = Lazy::new(|| RwLock::new(Display::new()));
+static DAC_REF: Lazy<RwLock<Dac>> = Lazy::new(|| RwLock::new(Dac::new()));
 
 // ADC geri çağrı fonksiyonu
 fn adc_callback(idx: usize, value: i16) {
@@ -290,30 +293,42 @@ fn adc_callback(idx: usize, value: i16) {
             spll_update(value as i32 * Q15_SCALE as i32, &mut state)
         }) as u32;
 
-        if let Some(dac) = DAC.get() {
+        {
+            let dac = DAC_REF.write();
             let phase = q15_add(state.cur_phase, PHASE_OFFSET);
             let sin_value: i32 = fast_sin(phase);
             let amplitude = {
                 let amp = q15_to_float(q15_sub(state.auto_offset_max, state.auto_offset_min)) * 0.5;
                 (amp * 2048.0).min(2048.0)
             };
-            let result = (q15_to_float(sin_value) * amplitude + 2048.0).clamp(0.0, 4095.0);
-            let dac_value = result as u32;
-            dac.write(dac_value);
+            let dac_value = (q15_to_float(sin_value) * amplitude + 2048.0).clamp(0.0, 4095.0) as u32;
+            dac.write(4095 - dac_value);
         }
     }
 }
 
 // Display task
 #[embassy_executor::task]
-async fn display_task() {
-    let display = Display::new();
-    DISPLAY.call_once(|| display);
+async fn display_task(_spawner: Spawner) {
+    
+    Timer::after(Duration::from_millis(100)).await;
+    {
+        let display = DISPLAY_REF.write(); // Yazma kilidi al
+        display.set_backlight(1);
+    }
 
     loop {
-        Timer::after(Duration::from_millis(100)).await;
-
-        let (cur_phase, omega, auto_offset_min, auto_offset_max, sogi_s1, sogi_s2, last_error, duration_ns, lock) = {
+        let (
+            cur_phase,
+            omega,
+            auto_offset_min,
+            auto_offset_max,
+            sogi_s1,
+            sogi_s2,
+            last_error,
+            duration_ns,
+            lock,
+        ) = {
             let state = SOGI_STATE_REF.read();
             (
                 state.cur_phase,
@@ -326,12 +341,13 @@ async fn display_task() {
                 state.duration_ns,
                 state.is_lock((30e-3 * Q15_SCALE) as i32),
             )
-        };        
+        };
 
         let theta_scaled = q15_to_float(q15_mul(cur_phase, THETA_SCALE));
         let freq = q15_to_float(omega) / TWO_PI;
 
-        if let Some(display) = DISPLAY.get() {
+        {
+            let display = DISPLAY_REF.read();
             display.clear();
             let msg = format!(
                 "sPLL:{}   F:{:<2}Hz   T: {:.2} uS",
@@ -360,29 +376,15 @@ async fn display_task() {
             );
             printk(msg.as_ptr());
         }
+        Timer::after(Duration::from_millis(100)).await;
     }
 }
 
 static EXECUTOR_MAIN: StaticCell<Executor> = StaticCell::new();
-pub static DISPLAY_SIGNAL: Signal<CriticalSectionRawMutex, bool> = Signal::new();
-static DISPLAY: spin::Once<Display> = spin::Once::new();
-static DAC: spin::Once<Dac> = spin::Once::new();
 
 #[no_mangle]
 extern "C" fn rust_main() {
     usage::set_logger_safe().expect("Logger ayarı başarısız");
-
-    let executor = EXECUTOR_MAIN.init(Executor::new());
-    executor.run(|spawner| {
-        spawner.spawn(main(spawner)).unwrap();
-        spawner.spawn(display_task()).unwrap();
-    })
-}
-
-#[embassy_executor::task]
-async fn main(_spawner: Spawner) {
-    let dac = Dac::new();
-    DAC.call_once(|| dac);
 
     let mut adc = Adc::new();
     adc.read_async_isr(
@@ -390,11 +392,9 @@ async fn main(_spawner: Spawner) {
         Some(adc_callback),
     );
 
-    if let Some(display) = DISPLAY.get() {
-        display.set_backlight(1);
-    }
-
-    loop {
-        DISPLAY_SIGNAL.wait().await;
-    }
+    let executor = EXECUTOR_MAIN.init(Executor::new());
+    executor.run(|spawner| {
+        spawner.spawn(display_task(spawner)).unwrap();
+    })
 }
+
