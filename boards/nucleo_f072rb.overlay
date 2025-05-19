@@ -1,7 +1,7 @@
-#include "nucleo_f207zg.dtsi"
+#include "nucleo_f072rb.dtsi"
 
-&i2c3 {
-	pinctrl-0 = <&i2c3_scl_pa8 &i2c3_sda_pc9>;
+&i2c1 {
+	pinctrl-0 = <&i2c1_scl_pb6 &i2c1_sda_pb7>;
 	pinctrl-names = "default";
 	status = "okay";
 	clock-frequency = <I2C_BITRATE_STANDARD>;
@@ -23,7 +23,6 @@
 		};								
 	};		
 	zephyr,user {
-		/* adjust channel number according to pinmux in board.dts */
 		io-channels = <&adc1 10>;
 		io-channel-names = "ADC_IN";
 

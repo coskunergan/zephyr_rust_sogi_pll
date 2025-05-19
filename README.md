@@ -5,7 +5,9 @@ This project implements a **Second-Order Generalized Integrator Phase-Locked Loo
 
 The code is written in a `no_std` environment, making it suitable for resource-constrained embedded devices. It uses the `embassy` framework for task management and asynchronous execution, and it supports hardware interfaces for ADC (Analog-to-Digital Converter), DAC (Digital-to-Analog Converter), and a display for real-time monitoring.
 
+
 ![Prj Demo](img/demo.gif)
+
 
 ## Features
 - **SOGI-PLL Algorithm**: Implements a robust SOGI-PLL for phase and frequency estimation of a 50 Hz nominal input signal, with a sampling frequency of 2500 Hz.
