@@ -347,13 +347,8 @@ async fn display_task(_spawner: Spawner) {
             );
             display.write(msg.as_bytes());
         }
-
-        extern "C" {
-            fn printk(fmt: *const u8, ...);
-        }
-        unsafe {
-            let msg = format!(
-                ">OF_MAX:{:.3}, OF_MIN:{:.3}, OMEGA:{:.3}, THETA:{:.3}, S1:{:.3}, S2:{:.3}, ERR:{:.3}, FREQ:{:.3}, D_TIME:{}\n\0",
+        log::info!(
+                ">OFFSET_MAX:{:.3}, OFFSET_MIN:{:.3}, OMEGA:{:.3}, THETA:{:.3}, S1:{:.3}, S2:{:.3}, ERR:{:.3}, FREQ:{:.3}, D_TIME:{}\n\0",
                 auto_offset_min,
                 auto_offset_max,
                 omega,
@@ -364,8 +359,7 @@ async fn display_task(_spawner: Spawner) {
                 freq,
                 duration_ns
             );
-            printk(msg.as_ptr());
-        }
+
         Timer::after(Duration::from_millis(100)).await;
     }
 }
