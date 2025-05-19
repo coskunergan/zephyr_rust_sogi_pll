@@ -11,6 +11,7 @@ common:
     - nrf52840dk/nrf52840
     - stm32f4_disco
     - rpi_pico
+    - nucleo_f207zg
 tests:
   sample.basic.drivers:
     tags:
@@ -22,3 +23,4 @@ tests:
     integration_platforms:
       - stm32f4_disco
       - rpi_pico
+      - nucleo_f207zg
