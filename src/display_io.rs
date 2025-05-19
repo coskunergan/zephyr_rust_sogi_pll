@@ -16,39 +16,24 @@ pub struct Display {
 
 impl Display {
     pub fn new() -> Self {
-        let ret = unsafe { display_init() };
-        if ret != 0 {
-            //panic!("Failed to initialize display: error {}", ret);
-        }
-
+        unsafe { display_init(); };        
         Display { _private: () }
     }
 
-    pub fn write(&self, data: &[u8]) {
-        let ret = unsafe { display_write(data.as_ptr(), data.len() as u16) };
-        if ret != 0 {
-            //panic!("Failed to write to display: error {}", ret);
-        }
+    pub fn write(&self, data: &[u8])  -> i32{
+        unsafe { display_write(data.as_ptr(), data.len() as u16) }
+    }
+    
+    #[allow(dead_code)]
+    pub fn clear(&self) -> i32{
+        unsafe { display_clear() }    
     }
     #[allow(dead_code)]
-    pub fn clear(&self) {
-        let ret = unsafe { display_clear() };
-        if ret != 0 {
-            //panic!("Failed to clear display: error {}", ret);
-        }
+    pub fn set_cursor(&self, state: bool) -> i32{
+        unsafe { display_set_cursor(state) }        
     }
     #[allow(dead_code)]
-    pub fn set_cursor(&self, state: bool) {
-        let ret = unsafe { display_set_cursor(state) };
-        if ret != 0 {
-            //panic!("Failed to set display cursor: error {}", ret);
-        }
-    }
-    #[allow(dead_code)]
-    pub fn set_backlight(&self, state: u8) {
-        let ret = unsafe { display_set_backlight(state) };
-        if ret != 0 {
-            //panic!("Failed to set display backlight: error {}", ret);
-        }
+    pub fn set_backlight(&self, state: u8) -> i32{
+        unsafe { display_set_backlight(state) }
     }
 }

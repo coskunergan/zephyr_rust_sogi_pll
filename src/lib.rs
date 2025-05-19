@@ -17,8 +17,6 @@ use zephyr::embassy::Executor;
 
 use core::f32::consts;
 use embassy_executor::Spawner;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::signal::Signal;
 use spin::{rwlock::RwLock, Lazy};
 use static_cell::StaticCell;
 
@@ -31,7 +29,6 @@ mod dac_io;
 mod display_io;
 mod usage;
 
-// Sabitler
 const Q15_SHIFT: i32 = 15;
 const Q15_SCALE: f32 = (1 << Q15_SHIFT) as f32;
 const TWO_PI: f32 = consts::PI * 2.0;
@@ -71,7 +68,6 @@ const DEFAULT_DENOM: i32 = (1.0 * Q15_SCALE) as i32;
 const THETA_SCALE: i32 = (360.0 / (TWO_PI * 180.0) * Q15_SCALE) as i32;
 const PHASE_OFFSET: i32 = ((consts::PI / 2.0) * Q15_SCALE) as i32;
 
-// Q15 aritmetik fonksiyonları
 fn q15_to_float(value: i32) -> f32 {
     value as f32 / Q15_SCALE
 }
@@ -94,8 +90,6 @@ fn q15_div(a: i32, b: i32) -> i32 {
     }
     (((a as i64) << Q15_SHIFT) / b as i64) as i32
 }
-
-// SOGI-PLL durum yapısı
 struct SogiPllState {
     pid: PidState,
     launch_loop: bool,
@@ -280,12 +274,10 @@ fn spll_update(val: i32, state: &mut SogiPllState) {
     state.last_error = e;
 }
 
-// Statik SOGI-PLL durumu
 static SOGI_STATE_REF: Lazy<RwLock<SogiPllState>> = Lazy::new(|| RwLock::new(SogiPllState::new()));
 static DISPLAY_REF: Lazy<RwLock<Display>> = Lazy::new(|| RwLock::new(Display::new()));
 static DAC_REF: Lazy<RwLock<Dac>> = Lazy::new(|| RwLock::new(Dac::new()));
 
-// ADC geri çağrı fonksiyonu
 fn adc_callback(idx: usize, value: i16) {
     if idx == 0 {
         let mut state = SOGI_STATE_REF.write();
@@ -301,19 +293,18 @@ fn adc_callback(idx: usize, value: i16) {
                 let amp = q15_to_float(q15_sub(state.auto_offset_max, state.auto_offset_min)) * 0.5;
                 (amp * 2048.0).min(2048.0)
             };
-            let dac_value = (q15_to_float(sin_value) * amplitude + 2048.0).clamp(0.0, 4095.0) as u32;
+            let dac_value =
+                (q15_to_float(sin_value) * amplitude + 2048.0).clamp(0.0, 4095.0) as u32;
             dac.write(4095 - dac_value);
         }
     }
 }
 
-// Display task
 #[embassy_executor::task]
 async fn display_task(_spawner: Spawner) {
-    
     Timer::after(Duration::from_millis(100)).await;
     {
-        let display = DISPLAY_REF.write(); // Yazma kilidi al
+        let display = DISPLAY_REF.write();
         display.set_backlight(1);
     }
 
@@ -384,7 +375,7 @@ static EXECUTOR_MAIN: StaticCell<Executor> = StaticCell::new();
 
 #[no_mangle]
 extern "C" fn rust_main() {
-    usage::set_logger_safe().expect("Logger ayarı başarısız");
+    let _ = usage::set_logger();
 
     let mut adc = Adc::new();
     adc.read_async_isr(
@@ -397,4 +388,3 @@ extern "C" fn rust_main() {
         spawner.spawn(display_task(spawner)).unwrap();
     })
 }
-

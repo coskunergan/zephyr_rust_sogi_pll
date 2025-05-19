@@ -14,16 +14,13 @@
 #define DT_SPEC_AND_COMMA(node_id, prop, idx) \
 	ADC_DT_SPEC_GET_BY_IDX(node_id, idx),
 
-// Global adc_channels dizisi
 const struct adc_dt_spec adc_channels[] =
 {
     DT_FOREACH_PROP_ELEM(DT_PATH(zephyr_user), io_channels, DT_SPEC_AND_COMMA)
 };
 
-// adc_channels uzunluğu
 const size_t adc_channels_len = ARRAY_SIZE(adc_channels);
 
-// adc_channels ve uzunluğuna erişim fonksiyonları
 const struct adc_dt_spec *get_adc_channels(void)
 {
     return adc_channels;
@@ -34,10 +31,8 @@ const size_t get_adc_channels_len(void)
     return adc_channels_len;
 }
 
-// Fonksiyon işaretçisi türü
 typedef void (*adc_callback_t)(void *, size_t, int16_t);
 
-// IsrContext yapısı
 struct adc_isr_context
 {
     struct k_work work;
@@ -50,7 +45,6 @@ struct adc_isr_context
     void *user_data;
 };
 
-// ADC nesnesi
 struct adc_obj
 {
     struct adc_sequence_options options;
@@ -60,11 +54,9 @@ struct adc_obj
     struct adc_isr_context isr_context;
 };
 
-// Prototip fonksiyonlar
 static void adc_soft_isr(struct k_work *work);
 static enum adc_action adc_hard_isr(const struct device *dev, const struct adc_sequence *seq, uint16_t sampling_index);
 
-// ADC nesnesi oluşturma
 struct adc_obj *adc_new(void)
 {
     struct adc_obj *adc = k_malloc(sizeof(struct adc_obj));
@@ -80,7 +72,6 @@ struct adc_obj *adc_new(void)
         return NULL;
     }
 
-    // Kanalları yapılandır
     for(size_t i = 0; i < adc->channel_count; i++)
     {
         if(!device_is_ready(adc_channels[i].dev))
@@ -96,7 +87,6 @@ struct adc_obj *adc_new(void)
         }
     }
 
-    // IsrContext başlatma
     adc->isr_context.sample = k_malloc(adc->channel_count * sizeof(int16_t));
     if(!adc->isr_context.sample)
     {
@@ -129,7 +119,6 @@ struct adc_obj *adc_new(void)
     return adc;
 }
 
-// Asenkron okuma
 int adc_async_read(struct adc_obj *adc, uint32_t interval_us, adc_callback_t handler, void *user_data)
 {
     if(!adc || adc->channel_index >= adc->channel_count)
@@ -158,7 +147,6 @@ int adc_async_read(struct adc_obj *adc, uint32_t interval_us, adc_callback_t han
     return adc_read_async(adc_channels[adc->channel_index].dev, &adc->sequence, NULL);
 }
 
-// ISR için asenkron okuma
 int adc_async_read_isr(struct adc_obj *adc, uint32_t interval_us, adc_callback_t handler, void *user_data)
 {
     if(!adc || adc->channel_index >= adc->channel_count)
@@ -187,7 +175,6 @@ int adc_async_read_isr(struct adc_obj *adc, uint32_t interval_us, adc_callback_t
     return adc_read_async(adc_channels[adc->channel_index].dev, &adc->sequence, NULL);
 }
 
-// Okumayı iptal etme
 void adc_cancel_read(struct adc_obj *adc)
 {
     if(adc)
@@ -196,7 +183,6 @@ void adc_cancel_read(struct adc_obj *adc)
     }
 }
 
-// Voltaj alma
 int32_t adc_get_voltage(struct adc_obj *adc, size_t idx)
 {
     if(!adc || idx >= adc->channel_count)
@@ -212,7 +198,6 @@ int32_t adc_get_voltage(struct adc_obj *adc, size_t idx)
     return val_mv;
 }
 
-// Ham değer alma
 int32_t adc_get_value(struct adc_obj *adc, size_t idx)
 {
     if(!adc || idx >= adc->channel_count)
@@ -227,7 +212,6 @@ int32_t adc_get_value(struct adc_obj *adc, size_t idx)
     return val;
 }
 
-// ADC nesnesini serbest bırakma
 void adc_free(struct adc_obj *adc)
 {
     if(adc)
@@ -237,7 +221,6 @@ void adc_free(struct adc_obj *adc)
     }
 }
 
-// Soft ISR
 static void adc_soft_isr(struct k_work *work)
 {
     struct adc_isr_context *context = CONTAINER_OF(work, struct adc_isr_context, work);
@@ -268,7 +251,6 @@ static void adc_soft_isr(struct k_work *work)
     }
 }
 
-// Hard ISR
 static enum adc_action adc_hard_isr(const struct device *dev, const struct adc_sequence *seq, uint16_t sampling_index)
 {
     struct adc_isr_context *context = seq->options->user_data;

@@ -22,8 +22,8 @@ pub fn get_last_cycles() -> u32 {
     unsafe { LAST_CYCLES }
 }
 #[allow(dead_code)]
-pub fn set_logger_safe() -> Result<(), &'static str> {
-    unsafe { zephyr::set_logger() }.map_err(|_| "Logger ayarı başarısız")
+pub fn set_logger() -> Result<(), &'static str> {
+    unsafe { zephyr::set_logger() }.map_err(|_| "Logger failure.")
 }
 #[allow(dead_code)]
 pub fn cycles_to_microseconds(cycles: u32) -> u64 {
