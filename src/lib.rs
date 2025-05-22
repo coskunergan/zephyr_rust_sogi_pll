@@ -15,10 +15,12 @@ use embassy_executor::Executor;
 #[cfg(feature = "executor-zephyr")]
 use zephyr::embassy::Executor;
 
+use core::cell::OnceCell;
 use core::f32::consts;
+use critical_section::Mutex as CriticalMutex;
 use embassy_executor::Spawner;
-use spin::{rwlock::RwLock, Lazy};
 use static_cell::StaticCell;
+use zephyr::sync::Mutex;
 
 use adc_io::Adc;
 use dac_io::Dac;
@@ -90,6 +92,7 @@ fn q15_div(a: i32, b: i32) -> i32 {
     }
     (((a as i64) << Q15_SHIFT) / b as i64) as i32
 }
+
 struct SogiPllState {
     pid: PidState,
     launch_loop: bool,
@@ -274,79 +277,83 @@ fn spll_update(val: i32, state: &mut SogiPllState) {
     state.last_error = e;
 }
 
-static SOGI_STATE_REF: Lazy<RwLock<SogiPllState>> = Lazy::new(|| RwLock::new(SogiPllState::new()));
-static DISPLAY_REF: Lazy<RwLock<Display>> = Lazy::new(|| RwLock::new(Display::new()));
-static DAC_REF: Lazy<RwLock<Dac>> = Lazy::new(|| RwLock::new(Dac::new()));
+static SOGI_STATE: StaticCell<Mutex<SogiPllState>> = StaticCell::new();
+static SOGI_STATE_REF: CriticalMutex<OnceCell<&'static Mutex<SogiPllState>>> =
+    CriticalMutex::new(OnceCell::new());
+static DAC_STATE: StaticCell<Mutex<Dac>> = StaticCell::new();
+static DAC_STATE_REF: CriticalMutex<OnceCell<&'static Mutex<Dac>>> =
+    CriticalMutex::new(OnceCell::new());
 
 fn adc_callback(idx: usize, value: i16) {
     if idx == 0 {
-        let mut state = SOGI_STATE_REF.write();
-        state.duration_ns = usage::measure_function_duration_ns(|| {
-            spll_update(value as i32 * Q15_SCALE as i32, &mut state)
-        }) as u32;
+        critical_section::with(|cs| {
+            if let Some(state_ref) = SOGI_STATE_REF.borrow(cs).get() {
+                let mut state = state_ref.lock().unwrap();
+                state.duration_ns = usage::measure_function_duration_ns(|| {
+                    spll_update(value as i32 * Q15_SCALE as i32, &mut state)
+                }) as u32;
 
-        {
-            let dac = DAC_REF.write();
-            let phase = q15_add(state.cur_phase, PHASE_OFFSET);
-            let sin_value: i32 = fast_sin(phase);
-            let amplitude = {
-                let amp = q15_to_float(q15_sub(state.auto_offset_max, state.auto_offset_min)) * 0.5;
-                (amp * 2048.0).min(2048.0)
-            };
-            let dac_value = (q15_to_float(sin_value) * amplitude + 2048.0).clamp(0.0, 4095.0) as u32;
-            dac.write(dac_value);
-        }
+                if let Some(dac_ref) = DAC_STATE_REF.borrow(cs).get() {
+                    let dac = dac_ref.lock().unwrap();
+                    let phase = q15_add(state.cur_phase, PHASE_OFFSET);
+                    let sin_value: i32 = fast_sin(phase);
+                    let amplitude = {
+                        let amp =
+                            q15_to_float(q15_sub(state.auto_offset_max, state.auto_offset_min))
+                                * 0.5;
+                        (amp * 2048.0).min(2048.0)
+                    };
+                    let dac_value =
+                        (q15_to_float(sin_value) * amplitude + 2048.0).clamp(0.0, 4095.0) as u32;
+                    dac.write(dac_value);
+                }
+            }
+        });
     }
 }
 
 #[embassy_executor::task]
 async fn display_task(_spawner: Spawner) {
-    Timer::after(Duration::from_millis(100)).await;
-    {
-        let display = DISPLAY_REF.write();
-        display.set_backlight(1);
-    }
+    let display = Display::new();
+    let mut cur_phase: i32 = 0;
+    let mut omega: i32 = 0;
+    let mut auto_offset_min: i32 = 0;
+    let mut auto_offset_max: i32 = 0;
+    let mut sogi_s1: i32 = 0;
+    let mut sogi_s2: i32 = 0;
+    let mut last_error: i32 = 0;
+    let mut duration_ns: u32 = 0;
+    let mut lock: bool = false;
+
+    let _ = Timer::after(Duration::from_millis(100));
+    display.set_backlight(1);
 
     loop {
-        let (
-            cur_phase,
-            omega,
-            auto_offset_min,
-            auto_offset_max,
-            sogi_s1,
-            sogi_s2,
-            last_error,
-            duration_ns,
-            lock,
-        ) = {
-            let state = SOGI_STATE_REF.read();
-            (
-                state.cur_phase,
-                state.omega,
-                state.auto_offset_min,
-                state.auto_offset_max,
-                state.sogi_s1,
-                state.sogi_s2,
-                state.last_error,
-                state.duration_ns,
-                state.is_lock((30e-3 * Q15_SCALE) as i32),
-            )
-        };
-
+        critical_section::with(|cs| {
+            let state_ref = SOGI_STATE_REF.borrow(cs).get().unwrap();
+            let state = state_ref.lock().unwrap();
+            cur_phase = state.cur_phase;
+            omega = state.omega;
+            auto_offset_min = state.auto_offset_min;
+            auto_offset_max = state.auto_offset_max;
+            sogi_s1 = state.sogi_s1;
+            sogi_s2 = state.sogi_s2;
+            last_error = state.last_error;
+            duration_ns = state.duration_ns;
+            lock = state.is_lock((30e-3 * Q15_SCALE) as i32);
+        });
         let theta_scaled = q15_to_float(q15_mul(cur_phase, THETA_SCALE));
         let freq = q15_to_float(omega) / TWO_PI;
 
-        {
-            let display = DISPLAY_REF.read();
-            display.clear();
-            let msg = format!(
-                "sPLL:{}   F:{:<2}Hz   T: {:.2} uS",
-                lock as u8,
-                freq as u8,
-                (duration_ns as f32 / 1e3)
-            );
-            display.write(msg.as_bytes());
-        }
+        display.clear();
+        let msg = format!(
+            "sPLL:{}   F:{:<2}Hz   T: {:.2} uS",
+            lock as u8,
+            freq as u8,
+            (duration_ns as f32 / 1e3)
+        );
+        display.write(msg.as_bytes());
+
         log::info!(
                 ">OFFSET_MAX:{:.3}, OFFSET_MIN:{:.3}, OMEGA:{:.3}, THETA:{:.3}, S1:{:.3}, S2:{:.3}, ERR:{:.3}, FREQ:{:.3}, D_TIME:{}\n\0",
                 auto_offset_min,
@@ -357,10 +364,10 @@ async fn display_task(_spawner: Spawner) {
                 sogi_s2,
                 last_error,
                 freq,
-                duration_ns
+                (duration_ns as f32 / 1e3)
             );
 
-        Timer::after(Duration::from_millis(100)).await;
+        let _ = Timer::after(Duration::from_millis(100));
     }
 }
 
@@ -369,6 +376,22 @@ static EXECUTOR_MAIN: StaticCell<Executor> = StaticCell::new();
 #[no_mangle]
 extern "C" fn rust_main() {
     let _ = usage::set_logger();
+
+    let sogi_state = SOGI_STATE.init(Mutex::new(SogiPllState::new()));
+    critical_section::with(|cs| {
+        SOGI_STATE_REF
+            .borrow(cs)
+            .set(sogi_state)
+            .expect("SOGI_STATE_REF zaten başlatılmış!");
+    });
+
+    let dac_state = DAC_STATE.init(Mutex::new(Dac::new()));
+    critical_section::with(|cs| {
+        DAC_STATE_REF
+            .borrow(cs)
+            .set(dac_state)
+            .expect("DAC_STATE_REF zaten başlatılmış!");
+    });
 
     let mut adc = Adc::new();
     adc.read_async_isr(

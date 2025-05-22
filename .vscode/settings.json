@@ -10,7 +10,9 @@
    //"board": "stm32l1_disco",
    //"board": "lpcxpresso11u68",
    //"board": "qmu_cortex_m3",
-   "board": "nucleo_f207zg",
+   //"board": "nucleo_f207zg",
+   "board": "nucleo_f072rb",
+   //"board": "esp32c3_devkitc",   
    
  },
  "app": {

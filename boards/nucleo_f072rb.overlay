@@ -18,12 +18,12 @@
 	gpios {
 		compatible = "gpio-leds";
 		led_green: led_green {
-			gpios = <&gpioa 5 (GPIO_ACTIVE_HIGH)>;
+			gpios = <&gpioa 8 (GPIO_ACTIVE_HIGH)>;
 			label = "test pin";
 		};								
 	};		
 	zephyr,user {
-		io-channels = <&adc1 10>;
+		io-channels = <&adc1 1>;
 		io-channel-names = "ADC_IN";
 
 		dac = <&dac1>;
@@ -36,6 +36,9 @@
 		rows = <2>;
 		mode = <4>;
 		boot-delay-ms = <100>;
+		rs-line-delay-ns  = <0>;		
+		enable-line-rise-delay-ns = <0>;
+		enable-line-fall-delay-ns = <0>;
 		register-select-gpios = <&aux_display_gpio 0 (GPIO_ACTIVE_HIGH)>;
 		read-write-gpios    = <&aux_display_gpio 1 (GPIO_ACTIVE_HIGH)>;
 		enable-gpios        = <&aux_display_gpio 2 (GPIO_ACTIVE_HIGH)>;
@@ -51,9 +54,8 @@
 &adc1 {
 	#address-cells = <1>;
 	#size-cells = <0>;
- 
-	channel@10 {
-		reg = <10>;
+	channel@1 {
+		reg = <1>;
 		zephyr,gain = "ADC_GAIN_1";
 		zephyr,reference = "ADC_REF_INTERNAL";
 		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
