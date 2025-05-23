@@ -1,0 +1,38 @@
+
+#include <zephyr/dt-bindings/pinctrl/esp-pinctrl-common.h>
+#include <dt-bindings/pinctrl/esp32c3-pinctrl.h>
+#include <zephyr/dt-bindings/pinctrl/esp32c3-gpio-sigmap.h>
+
+&pinctrl {
+
+	pcf8574_pins: pcf8574_pins {
+    	group1 {
+                pinmux = <I2C0_SDA_GPIO4>,
+                            <I2C0_SCL_GPIO5>;
+                bias-pull-up;
+                drive-open-drain;
+                output-high;
+            };
+    };
+
+	adc_in_pins: adc_in_pins { 
+		group1 { 	
+			pinmux = <ESP32_PINMUX(3, 3, ESP_NOSIG)>;
+		}; 
+	};	
+};
+
+&adc0 {
+	pinctrl-0 = <&adc_in_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&i2c0 { 
+	status = "okay"; 
+	clock-frequency = <I2C_BITRATE_STANDARD>; 
+	pinctrl-0 = <&pcf8574_pins>; 
+	pinctrl-names = "default"; 
+};
+
+

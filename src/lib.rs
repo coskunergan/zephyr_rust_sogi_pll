@@ -324,8 +324,7 @@ async fn display_task(_spawner: Spawner) {
     let mut last_error: i32 = 0;
     let mut duration_ns: u32 = 0;
     let mut lock: bool = false;
-
-    let _ = Timer::after(Duration::from_millis(100));
+    
     display.set_backlight(1);
 
     loop {
@@ -367,7 +366,7 @@ async fn display_task(_spawner: Spawner) {
                 (duration_ns as f32 / 1e3)
             );
 
-        let _ = Timer::after(Duration::from_millis(100));
+        let _ = Timer::after(Duration::from_millis(100)).await;
     }
 }
 
@@ -381,16 +380,14 @@ extern "C" fn rust_main() {
     critical_section::with(|cs| {
         SOGI_STATE_REF
             .borrow(cs)
-            .set(sogi_state)
-            .expect("SOGI_STATE_REF zaten başlatılmış!");
+            .set(sogi_state).unwrap();
     });
 
     let dac_state = DAC_STATE.init(Mutex::new(Dac::new()));
     critical_section::with(|cs| {
         DAC_STATE_REF
             .borrow(cs)
-            .set(dac_state)
-            .expect("DAC_STATE_REF zaten başlatılmış!");
+            .set(dac_state).unwrap();
     });
 
     let mut adc = Adc::new();
