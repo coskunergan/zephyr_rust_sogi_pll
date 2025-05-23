@@ -5,9 +5,7 @@ This project implements a **Second-Order Generalized Integrator Phase-Locked Loo
 
 The code is written in a `no_std` environment, making it suitable for resource-constrained embedded devices. It uses the `embassy` framework for task management and asynchronous execution, and it supports hardware interfaces for ADC (Analog-to-Digital Converter), DAC (Digital-to-Analog Converter), and a display for real-time monitoring.
 
-
 ![Prj Demo](img/demo.gif)
-
 
 ## Features
 - **SOGI-PLL Algorithm**: Implements a robust SOGI-PLL for phase and frequency estimation of a 50 Hz nominal input signal, with a sampling frequency of 2500 Hz.
@@ -34,7 +32,7 @@ To build and run this project, you need the following:
 - **Build Tools**: Install `west` (Zephyr's build tool) and other dependencies as outlined in the Zephyr documentation.
 
 ## Project Structure
-- **`lib.rs`**: The main Rust source file containing the SOGI-PLL algorithm, fixed-point math utilities, PID controller, and task management.
+- **`lib.rs`**: The main Rust source file containing the SOGI-PLL algorithm, fixed-point math utilities (e.g., `q15_mul`, `fast_sin`, `fast_cos`), PID controller, and task management.
 - **`adc_io.rs`**: Module for ADC configuration and asynchronous sampling.
 - **`dac_io.rs`**: Module for DAC configuration and output.
 - **`display_io.rs`**: Module for display initialization and updates.
@@ -43,7 +41,7 @@ To build and run this project, you need the following:
   - `alloc`: For dynamic memory allocation in a `no_std` environment.
   - `embassy_executor`: For task spawning and scheduling.
   - `embassy_time`: For precise timing and delays.
-  - `spin`: For thread-safe static state management (`RwLock`).
+  - `zephyr::sync`: For mutex-based synchronization.
   - `static_cell`: For initializing static variables safely.
 
 ## Building and Running
@@ -100,15 +98,22 @@ To build and run this project, you need the following:
 The algorithm's behavior can be tuned by modifying constants in `lib.rs`:
 - **Sampling Frequency**: `SAMPLE_FREQ` (default: 2500 Hz).
 - **Target Frequency**: `TARGET_FREQ` (default: 50 Hz).
-- **PID Gains**: `PID_KP_FLOAT`, `PID_KI_FLOAT`, `PID_KC_FLOAT` (default: 150.0, 15.0, 10.0).
+- **PID Gains**:
+  - `PID_KP_FLOAT` (default: 150.0).
+  - `PID_KI_FLOAT` (default: 15.0).
+  - `PID_KC_FLOAT` (default: 10.0).
 - **SOGI Gain**: `SOGI_K_FLOAT` (default: √2 ≈ 1.414).
 - **Offset Step**: `OFFSET_STEP_COEFF` (default: 10,000).
 - **Frequency Range**: `PID_FREQ_RANGE` (default: ±15 Hz around 50 Hz).
 
-To modify these, update the constants and rebuild the project.
+To modify these, update the constants in `lib.rs` and rebuild the project.
 
 ## Performance
 - **Processing Time**: The `duration_ns` field logs the time taken to process each ADC sample, typically in the range of microseconds.
+- **Hardware-Specific Performance**:
+  - 🍓 **Cortex-M0 (STM32F072, 48 MHz, no FPU)**: `spll_update` function cycle time ~59 µs.
+  - 🍎 **Cortex-M3 (STM32F205, 120 MHz, no FPU)**: `spll_update` function cycle time ~5.6 µs.
+  - 🍐 **Cortex-M4 (STM32F407, 168 MHz, FPU disabled)**: `spll_update` function cycle time ~3.7 µs.
 - **Lock Time**: The PLL achieves lock (error < 30 mV in Q15 scale) after approximately `N_SAMPLE` samples (default: 50 samples, or 20 ms at 2500 Hz).
 - **Accuracy**: The fixed-point arithmetic ensures minimal computational overhead while maintaining sufficient precision for phase and frequency tracking.
 
