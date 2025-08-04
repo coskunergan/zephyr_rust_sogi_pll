@@ -12,8 +12,8 @@
    //"board": "qmu_cortex_m3",
    //"board": "nucleo_f207zg",
    //"board": "nucleo_f072rb",
-   "board": "esp32c3_devkitc",   
-   
+   //"board": "esp32c3_devkitc",
+   "board": "esp32c3_devkitm",
  },
  "app": {
    "name": "${config:workspaceFolder.AppUnderDev}",
